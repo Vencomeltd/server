@@ -834,6 +834,36 @@ router.get("/:id", auth, async (req, res) => {
   }
 });
 
+// Builds a minimal .ics calendar attachment for a confirmed booking --
+// Gmail/Outlook/Apple Mail all recognize this and show a native "Add to
+// Calendar" prompt on the email itself, no custom link/button needed.
+function buildBookingICS(booking, property) {
+  const toICSDate = (date) =>
+    new Date(date).toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+  const address = property?.location
+    ? [property.location.address, property.location.city, property.location.country].filter(Boolean).join(", ")
+    : "";
+  const escapeText = (text) => String(text || "").replace(/[\\,;]/g, (m) => `\\${m}`).replace(/\n/g, "\\n");
+
+  return [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//VenCome//Booking//EN",
+    "BEGIN:VEVENT",
+    `UID:${booking._id}@vencome.com`,
+    `DTSTAMP:${toICSDate(new Date())}`,
+    `DTSTART:${toICSDate(booking.checkIn)}`,
+    `DTEND:${toICSDate(booking.checkOut)}`,
+    `SUMMARY:${escapeText(property?.title ? `VenCome: ${property.title}` : "VenCome Booking")}`,
+    address ? `LOCATION:${escapeText(address)}` : null,
+    `DESCRIPTION:${escapeText(`Your confirmed booking on VenCome. View details: https://www.vencome.com/customer/bookings`)}`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ]
+    .filter(Boolean)
+    .join("\r\n");
+}
+
 // Shared by PUT /:id/status (authenticated dashboard action) and
 // /:id/quick-action (token-based one-click email action, added below) --
 // payment capture/release, date blocking, calendar push, socket events, and
@@ -968,10 +998,20 @@ async function applyBookingDecision(booking, status, io) {
           console.error("Invoice generation error:", invoiceErr.message);
         }
 
+        const calendarAttachment = {
+          filename: "VenCome-Booking.ics",
+          // sendEmail base64-encodes via content.toString("base64") -- a
+          // plain string's toString() ignores that argument and would send
+          // raw unencoded text where SendGrid expects base64. Must be a
+          // Buffer, same as the PDF invoice attachment already is.
+          content: Buffer.from(buildBookingICS(booking, prop), "utf-8"),
+          contentType: "text/calendar",
+        };
+
         sendEmail({
           to: guestUser.email,
           subject: "Your booking has been confirmed 🎉",
-          attachments: invoiceAttachment ? [invoiceAttachment] : [],
+          attachments: [calendarAttachment, ...(invoiceAttachment ? [invoiceAttachment] : [])],
           html: `
             <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
               <img src="https://vencome.com/VenCome.jpg" alt="VenCome" style="height:40px;margin-bottom:24px;" />
