@@ -229,6 +229,40 @@ router.post("/verify-login", otpLimiter, async (req, res) => {
           </div>
         `,
       });
+
+      // Welcome email -- client asked for this (Aug 26), never drafted.
+      // First-draft copy, easy to revise -- differs slightly for host vs
+      // customer since the two roles' first useful action differs.
+      const welcomeName = user.displayName || user.firstName || "there";
+      sendEmail({
+        to: normalizedEmail,
+        subject: "Welcome to VenCome 🎉",
+        html: `
+          <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
+            <img src="https://www.vencome.com/logo-blue.png" alt="VenCome" style="height:40px;margin-bottom:24px;" />
+            <h2 style="color:#0A1628;">Welcome to VenCome, ${welcomeName} 🎉</h2>
+            ${
+              user.isHost
+                ? `
+            <p>You're in. VenCome is the easiest way to turn your commercial space into steady income -- list once, and start receiving booking requests from businesses looking for exactly what you've got.</p>
+            <p>A few things to do next:</p>
+            <ul style="color:#333;line-height:1.8;">
+              <li>List your first space -- it takes a few minutes</li>
+              <li>Add a payout method so you can get paid</li>
+              <li>Connect your calendar so you never get double-booked</li>
+            </ul>
+            <a href="https://www.vencome.com/create-space" style="display:inline-block;padding:14px 28px;background:#305CDE;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;">List Your Space</a>
+            `
+                : `
+            <p>You're in. VenCome makes it simple to find and book commercial spaces -- offices, studios, event venues and more -- by the hour, day, or year.</p>
+            <p>Whenever you're ready, browse spaces near you and book in a few clicks. Your payment stays protected until your booking is complete.</p>
+            <a href="https://www.vencome.com/search" style="display:inline-block;padding:14px 28px;background:#305CDE;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;">Find a Space</a>
+            `
+            }
+            <p style="margin-top:24px;color:#6B7280;font-size:13px;">The VenCome Team</p>
+          </div>
+        `,
+      });
     }
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
