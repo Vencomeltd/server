@@ -130,16 +130,31 @@ router.use(["/team", "/settings"], requireAdminRole());
 // ─── Dashboard stats ──────────────────────────────────────────────────────────
 router.get("/stats", async (req, res) => {
   try {
-    const [users, properties, bookings, reports, pendingVerifications, escrowPending] = await Promise.all([
+    const [users, properties, bookings, reports, pendingVerifications, escrowPending, activeUsers, pendingListings] = await Promise.all([
       User.countDocuments(),
       Property.countDocuments({ isActive: true }),
       Booking.countDocuments(),
       Report.countDocuments({ status: "open" }),
       User.countDocuments({ "businessVerification.status": "under_review" }),
       Booking.find({ isPaid: true, escrowReleased: false, status: "completed" }).select("hostAmount"),
+      // Platform-wide, unlike the client's old page-scoped filter (which
+      // only ever looked at whatever 20 users / 50 listings happened to be
+      // on the currently-fetched page, silently under-reporting once there
+      // was more than one page of either).
+      User.countDocuments({ isBanned: { $ne: true } }),
+      Property.countDocuments({ isActive: false }),
     ]);
     const totalEscrow = escrowPending.reduce((s, b) => s + b.hostAmount, 0);
-    res.json({ users, properties, bookings, openReports: reports, pendingVerifications, totalEscrowPending: totalEscrow });
+    res.json({
+      users,
+      properties,
+      bookings,
+      openReports: reports,
+      pendingVerifications,
+      totalEscrowPending: totalEscrow,
+      activeUsers,
+      pendingListings,
+    });
   } catch { res.status(500).json({ error: "Server error" }); }
 });
 
