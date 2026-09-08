@@ -215,6 +215,7 @@ router.get("/users", async (req, res) => {
   const filter = {};
   if (q) filter.$or = [{ email: { $regex: q, $options: "i" } }, { firstName: { $regex: q, $options: "i" } }];
   if (role === "host") filter.isHost = true;
+  if (role === "customer") filter.isHost = { $ne: true };
   if (role === "admin") filter.isAdmin = true;
   const skip = (parseInt(page) - 1) * parseInt(limit);
   const [users, total] = await Promise.all([
