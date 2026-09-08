@@ -7,6 +7,7 @@ const User = require("../models/User");
 const Booking = require("../models/Booking");
 const Property = require("../models/Property");
 const Draft = require("../models/Draft");
+const ProspectEmail = require("../models/ProspectEmail");
 const Report = require("../models/Report");
 const SupportTicket = require("../models/SupportTicket");
 const { geocodeAddress } = require("../utils/geocode");
@@ -121,7 +122,7 @@ router.use(adminAuth);
 // Tiered access on top of adminAuth — full_admin always passes every gate.
 // /stats and /overview-analytics are intentionally left ungated (every tier
 // sees the dashboard home). Team management stays full_admin-only below.
-router.use(["/users", "/verifications", "/reports", "/properties", "/bookings", "/support-tickets", "/drafts"], requireAdminRole("support"));
+router.use(["/users", "/verifications", "/reports", "/properties", "/bookings", "/support-tickets", "/drafts", "/prospect-emails"], requireAdminRole("support"));
 router.use(["/payments", "/payouts", "/invoices", "/commission"], requireAdminRole("finance"));
 router.use(["/markets", "/categories", "/broadcast"], requireAdminRole("content"));
 router.use(["/team", "/settings"], requireAdminRole());
@@ -738,6 +739,23 @@ router.delete("/drafts/:id", async (req, res) => {
   const draft = await Draft.findByIdAndDelete(req.params.id);
   if (!draft) return res.status(404).json({ error: "Draft not found" });
   res.json({ success: true });
+});
+
+// Prospect emails left on ServiceLocationPage.jsx's "coming soon" state,
+// grouped by territory (location + subcategory) so admin can see at a
+// glance which territories have enough interest to prioritize opening,
+// and pull the email list for outreach once one does.
+router.get("/prospect-emails", async (req, res) => {
+  const prospects = await ProspectEmail.find({}).sort({ location: 1, createdAt: -1 });
+
+  const grouped = {};
+  for (const p of prospects) {
+    const key = `${p.location}${p.subcategory ? ` — ${p.subcategory}` : ""}`;
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push({ email: p.email, category: p.category, createdAt: p.createdAt });
+  }
+
+  res.json({ total: prospects.length, territories: grouped });
 });
 
 // One-off fix for listings created before coordinates were reliably
