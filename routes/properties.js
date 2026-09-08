@@ -1437,6 +1437,7 @@ router.put(
 
     // FIX: bust the cache after a successful update
     await client.del(`property:${req.params.id}`);
+    if (property.slug) await client.del(`property:${property.slug}`);
 
     res.json({
       success: true,
@@ -1475,6 +1476,7 @@ router.patch("/:id/status", auth, async (req, res) => {
 
     // Bust cache so listing visibility updates immediately
     await client.del(`property:${req.params.id}`);
+    if (property.slug) await client.del(`property:${property.slug}`);
 
     res.json({
       success: true,
@@ -1533,6 +1535,7 @@ router.patch("/:id/availability", auth, async (req, res) => {
 
     await property.save();
     await client.del(`property:${req.params.id}`);
+    if (property.slug) await client.del(`property:${property.slug}`);
 
     res.json({
       success: true,
@@ -1592,6 +1595,7 @@ router.post("/:id/calendar-sync/run", auth, async (req, res) => {
     const syncExternalCalendar = require("../utils/syncIcal");
     const result = await syncExternalCalendar(property._id);
     await client.del(`property:${req.params.id}`);
+    if (property.slug) await client.del(`property:${property.slug}`);
 
     res.json({ success: true, ...result, lastSyncedAt: new Date() });
   } catch (err) {
@@ -1717,6 +1721,7 @@ router.delete("/:id", auth, async (req, res) => {
 
     // FIX: bust cache before responding, and send email fire-and-forget
     await client.del(`property:${req.params.id}`);
+    if (property.slug) await client.del(`property:${property.slug}`);
 
     // FIX: send email before res.send() so a throw here doesn't crash silently
     const user = await User.findById(req.user.id);
@@ -1826,6 +1831,7 @@ router.delete("/:id/images", auth, async (req, res) => {
 
     // Bust cache after image deletion
     await client.del(`property:${req.params.id}`);
+    if (property.slug) await client.del(`property:${property.slug}`);
 
     res.json({
       success: true,
