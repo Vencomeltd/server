@@ -39,7 +39,11 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 },
+  // Raised from 10MB -- a listing video needs more room than a document
+  // or photo. Applies to every field on this shared instance (images,
+  // cqcDocuments, leaseFile, video); no per-field limit support in multer
+  // without a second instance, not worth the complexity for a size ceiling.
+  limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowedMimeTypes = [
       "image/jpeg",
@@ -49,11 +53,14 @@ const upload = multer({
       "application/pdf",
       "application/msword",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "video/mp4",
+      "video/quicktime",
+      "video/webm",
     ];
 
     if (!allowedMimeTypes.includes(file.mimetype)) {
       return cb(
-        new Error("Only image, PDF, DOC, and DOCX files are allowed!"),
+        new Error("Only image, video, PDF, DOC, and DOCX files are allowed!"),
         false
       );
     }
@@ -172,6 +179,7 @@ router.post(
     { name: "images", maxCount: 45 },
     { name: "cqcDocuments", maxCount: 10 },
     { name: "leaseFile", maxCount: 1 }, // ✅ NEW: Added lease file field
+    { name: "video", maxCount: 1 },
   ]),
   async (req, res) => {
     try {
@@ -209,6 +217,7 @@ router.post(
           ...(req.files?.images || []),
           ...(req.files?.cqcDocuments || []),
           ...(req.files?.leaseFile || []), // ✅ NEW: Added lease file cleanup
+          ...(req.files?.video || []),
         ]);
         return res.status(400).json({
           error: "Invalid JSON format in request body",
@@ -260,6 +269,7 @@ router.post(
           ...(req.files?.images || []),
           ...(req.files?.cqcDocuments || []),
           ...(req.files?.leaseFile || []), // ✅ NEW: Added lease file cleanup
+          ...(req.files?.video || []),
         ]);
         return res.status(400).json({
           error: "Missing required fields: title and description are required",
@@ -274,6 +284,7 @@ router.post(
             ...(req.files?.images || []),
             ...(req.files?.cqcDocuments || []),
             ...(req.files?.leaseFile || []), // ✅ NEW: Added lease file cleanup
+            ...(req.files?.video || []),
           ]);
           return res.status(404).json({ error: "Category not found" });
         }
@@ -286,6 +297,7 @@ router.post(
             ...(req.files?.images || []),
             ...(req.files?.cqcDocuments || []),
             ...(req.files?.leaseFile || []),
+            ...(req.files?.video || []),
           ]);
           return res.status(400).json({ error: "One or more category IDs are invalid" });
         }
@@ -393,6 +405,22 @@ router.post(
         }
       }
 
+      // Handle video tour upload
+      let videoUrl = req.body.existingVideo || null;
+      const videoFiles = req.files?.video || [];
+      if (videoFiles.length > 0) {
+        try {
+          const uploadedVideoUrls = await uploadFilesToR2(videoFiles);
+          videoUrl = uploadedVideoUrls[0];
+        } catch (uploadError) {
+          console.error("Error uploading video to R2:", uploadError);
+          return res.status(500).json({
+            error: "Failed to upload video",
+            details: uploadError.message,
+          });
+        }
+      }
+
       // ── Images already uploaded earlier in this session (e.g. resumed from
       // a saved draft) — the client sends their URLs directly since it's the
       // frontend's current form state that reflects any adds/removes, not a
@@ -417,6 +445,7 @@ router.post(
           ...(req.files?.images || []),
           ...(req.files?.cqcDocuments || []),
           ...(req.files?.leaseFile || []),
+          ...(req.files?.video || []),
         ]);
         return res.status(400).json({
           error: "Please add at least one photo before publishing your listing.",
@@ -482,6 +511,7 @@ router.post(
         })),
         cqcDocuments: cqcDocumentUrls,
         leaseAgreement: leaseAgreementUrl, // ✅ NEW: Added lease agreement field
+        video: videoUrl,
         icalUrl: icalUrl || undefined,
         listingTerms,
       });
@@ -605,6 +635,7 @@ router.post(
         ...(req.files?.images || []),
         ...(req.files?.cqcDocuments || []),
         ...(req.files?.leaseFile || []), // ✅ NEW: Added lease file cleanup
+        ...(req.files?.video || []),
       ]);
       res.status(500).json({ error: "Server error", details: err.message });
     }
@@ -1165,6 +1196,7 @@ router.put(
   upload.fields([
     { name: "images", maxCount: 45 },
     { name: "leaseFile", maxCount: 1 },
+    { name: "video", maxCount: 1 },
   ]),
   async (req, res) => {
   try {
@@ -1177,6 +1209,7 @@ router.put(
       cleanupTempFiles([
         ...(req.files?.images || []),
         ...(req.files?.leaseFile || []),
+        ...(req.files?.video || []),
       ]);
       return res.status(404).json({ error: "Property not found" });
     }
@@ -1190,6 +1223,7 @@ router.put(
         cleanupTempFiles([
           ...(req.files?.images || []),
           ...(req.files?.leaseFile || []),
+          ...(req.files?.video || []),
         ]);
         return res.status(403).json({
           error: "Unauthorized: You are not the host of this property",
@@ -1381,6 +1415,22 @@ router.put(
       }
     } else if (req.body.existingLeaseAgreement !== undefined) {
       property.leaseAgreement = req.body.existingLeaseAgreement || null;
+    }
+
+    const videoFiles = req.files?.video || [];
+    if (videoFiles.length > 0) {
+      try {
+        const uploadedVideoUrls = await uploadFilesToR2(videoFiles);
+        property.video = uploadedVideoUrls[0];
+      } catch (uploadError) {
+        console.error("Error uploading video to R2:", uploadError);
+        return res.status(500).json({
+          error: "Failed to upload video",
+          details: uploadError.message,
+        });
+      }
+    } else if (req.body.existingVideo !== undefined) {
+      property.video = req.body.existingVideo || null;
     }
 
     const updatedProperty = await property.save();

@@ -229,6 +229,13 @@ const propertySchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // Optional single video tour of the space, shown alongside the photo
+    // gallery. Client-requested (Aug 24 WhatsApp) -- never actually built
+    // despite an earlier "yes we can" reply.
+    video: {
+      type: String,
+      default: null,
+    },
     // Optional host-written terms specific to this listing (e.g. equipment
     // handling, cancellation nuances, access rules). Separate from and in
     // addition to VenCome's platform-wide Terms & Conditions -- shown as a
