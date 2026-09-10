@@ -1,6 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const Blog = require("../models/Blog");
+const BlogComment = require("../models/BlogComment");
+const auth = require("../middleware/auth");
 const { adminAuth } = require("../middleware/auth");
 
 // Helper to generate slug from title
@@ -45,6 +47,59 @@ router.get("/:slug", async (req, res) => {
     );
     if (!blog) return res.status(404).json({ error: "Blog not found" });
     res.json({ success: true, blog });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ─── Comments ───────────────────────────────────────────────────────────────
+
+// GET /blog/:slug/comments — public, chronological (oldest first)
+router.get("/:slug/comments", async (req, res) => {
+  try {
+    const blog = await Blog.findOne({ slug: req.params.slug, status: "published" }).select("_id");
+    if (!blog) return res.status(404).json({ error: "Blog not found" });
+
+    const comments = await BlogComment.find({ blog: blog._id })
+      .sort({ createdAt: 1 })
+      .populate("user", "firstName lastName displayName profileImage");
+
+    res.json({ success: true, comments });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST /blog/:slug/comments — logged-in users only
+router.post("/:slug/comments", auth, async (req, res) => {
+  try {
+    const content = (req.body.content || "").trim();
+    if (!content) return res.status(400).json({ error: "Comment can't be empty" });
+    if (content.length > 2000) return res.status(400).json({ error: "Comment is too long" });
+
+    const blog = await Blog.findOne({ slug: req.params.slug, status: "published" }).select("_id");
+    if (!blog) return res.status(404).json({ error: "Blog not found" });
+
+    const comment = await BlogComment.create({ blog: blog._id, user: req.user.id, content });
+    await comment.populate("user", "firstName lastName displayName profileImage");
+
+    res.status(201).json({ success: true, comment });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// DELETE /blog/:slug/comments/:commentId — the comment's own author only
+router.delete("/:slug/comments/:commentId", auth, async (req, res) => {
+  try {
+    const comment = await BlogComment.findById(req.params.commentId);
+    if (!comment) return res.status(404).json({ error: "Comment not found" });
+    if (comment.user.toString() !== req.user.id) {
+      return res.status(403).json({ error: "You can only delete your own comments" });
+    }
+
+    await comment.deleteOne();
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }
