@@ -18,6 +18,7 @@ const { getUnitOccupancy, isFullyBooked, pickAvailableUnit } = require("../utils
 const {
   calculateDailyPriceWithBreakdown,
   calculateHourlyPriceWithBreakdown,
+  resolveDayHours,
 } = require("../utils/pricing");
 const { resolveCommissionRate } = require("../utils/commission");
 const googleCalendar = require("../utils/googleCalendar");
@@ -292,10 +293,14 @@ router.post(
       // weekly, monthly, and annual bookings are for the full day(s)
       // selected and must not be blocked by a listing's hour-of-day
       // opening window (that only makes sense for hourly slots).
-      const openTime = property.availability?.openTime;
-      const closeTime = property.availability?.closeTime;
+      // Resolves per-day-of-week hours when the listing uses custom hours
+      // (availability.hoursMode === "custom") -- the flat openTime/closeTime
+      // above stay empty in that mode, so reading them directly here used to
+      // silently skip this check entirely for those listings.
+      const dayWindow = resolveDayHours(checkInDate, property.availability);
 
-      if (effectivePricingType === "HOURLY" && openTime && closeTime) {
+      if (effectivePricingType === "HOURLY" && dayWindow && dayWindow.openTime && dayWindow.closeTime) {
+        const { openTime, closeTime } = dayWindow;
         const [openH, openM] = openTime.split(":").map(Number);
         const [closeH, closeM] = closeTime.split(":").map(Number);
 

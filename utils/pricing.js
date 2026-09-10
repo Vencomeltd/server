@@ -32,6 +32,26 @@ function resolveDayRate(date, baseRate, customDayPricing) {
   return override ? override.rate : baseRate;
 }
 
+// Resolves the open/close window for a specific calendar day, accounting
+// for per-day-of-week opening hours (availability.hoursMode === "custom").
+// Falls back to the listing's flat openTime/closeTime for "same" mode.
+// Returns { openTime, closeTime } (empty strings = no restriction set), or
+// null when that day is open 24 hours (no restriction to check at all).
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+function resolveDayHours(date, availability) {
+  if (!availability) return { openTime: "", closeTime: "" };
+  if (availability.hoursMode !== "custom") {
+    if (availability.is24Hours) return null;
+    return { openTime: availability.openTime || "", closeTime: availability.closeTime || "" };
+  }
+  const dayName = DAY_NAMES[date.getDay()];
+  const entry = (availability.dayHours || []).find((d) => d.day === dayName);
+  if (!entry) return { openTime: "", closeTime: "" };
+  if (entry.is24Hours) return null;
+  return { openTime: entry.openTime || "", closeTime: entry.closeTime || "" };
+}
+module.exports.resolveDayHours = resolveDayHours;
+
 // DAILY pricing: walks each night of the stay (checkOutDate exclusive,
 // same convention as the existing totalNights calendar-day-gap logic),
 // applying any customDayPricing override per night. Returns the summed
