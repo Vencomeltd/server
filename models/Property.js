@@ -128,6 +128,10 @@ const propertySchema = new mongoose.Schema(
       singleDayOnly: { type: Boolean, default: false },
     },
     firstFiveApproved: { type: Number, default: 0 },
+    // Homepage display order, set by admin drag-reorder. Lower sorts first;
+    // 0 for every listing until an admin reorders them, so the default
+    // newest-first sort (createdAt) still applies as a tiebreaker.
+    order: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
     host: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     category: { type: mongoose.Schema.Types.ObjectId, ref: "Category" },

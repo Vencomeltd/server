@@ -806,6 +806,23 @@ router.post("/properties/backfill-coordinates", async (req, res) => {
   }
 });
 
+// Bulk-sets Property.order from a drag-reordered list -- must be registered
+// before the /:id route below, or Express would match "reorder" as an :id.
+router.patch("/properties/reorder", async (req, res) => {
+  try {
+    const { order } = req.body;
+    if (!Array.isArray(order) || order.length === 0) {
+      return res.status(400).json({ error: "order must be a non-empty array of property IDs" });
+    }
+    await Promise.all(
+      order.map((id, index) => Property.updateOne({ _id: id }, { $set: { order: index } }))
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Server error", details: err.message });
+  }
+});
+
 // Approve/reject (isActive) is the original purpose of this route; the
 // other fields below were added so admin can also correct or backfill a
 // listing's core details directly -- most importantly location.neighborhood
@@ -1518,7 +1535,7 @@ router.post("/team/invite", async (req, res) => {
 // ─── Categories ───────────────────────────────────────────────────────────────
 router.get("/categories", async (req, res) => {
   try {
-    const categories = await Category.find().sort({ createdAt: 1 });
+    const categories = await Category.find().sort({ order: 1 });
     const withCounts = await Promise.all(
       categories.map(async (cat) => {
         const listingCount = await Property.countDocuments({
@@ -1557,6 +1574,23 @@ router.post("/categories", async (req, res) => {
     res.status(201).json({ success: true, category });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Bulk-sets Category.order from a drag-reordered list -- must be registered
+// before the /:id route below, or Express would match "reorder" as an :id.
+router.patch("/categories/reorder", async (req, res) => {
+  try {
+    const { order } = req.body;
+    if (!Array.isArray(order) || order.length === 0) {
+      return res.status(400).json({ error: "order must be a non-empty array of category IDs" });
+    }
+    await Promise.all(
+      order.map((id, index) => Category.updateOne({ _id: id }, { $set: { order: index } }))
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Server error", details: err.message });
   }
 });
 

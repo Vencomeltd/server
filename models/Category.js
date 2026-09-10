@@ -28,6 +28,10 @@ const categorySchema = new mongoose.Schema(
     subcategories: [subCategorySchema],
     description: { type: String, required: true },
     status: { type: String, enum: ["draft", "published"], default: "published" },
+    // Display order on the homepage category strip / category nav, set by
+    // admin drag-reorder. Lower sorts first; ties fall back to insertion
+    // order. 0 for every existing category until an admin reorders them.
+    order: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

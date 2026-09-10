@@ -30,7 +30,7 @@ router.post("/", async (req, res) => {
 // ✅ Get all published categories (draft categories are hidden from hosts/customers)
 router.get("/", async (req, res) => {
   try {
-    const categories = await Category.find({ status: "published" });
+    const categories = await Category.find({ status: "published" }).sort({ order: 1 });
     res.json(categories);
   } catch (err) {
     res.status(500).json({ error: "Server error" });
@@ -40,7 +40,7 @@ router.get("/", async (req, res) => {
 router.get("/with-counts", async (req, res) => {
   try {
     const Property = require("../models/Property");
-    const categories = await Category.find({ status: "published" });
+    const categories = await Category.find({ status: "published" }).sort({ order: 1 });
 
     const categoriesWithCounts = await Promise.all(
       categories.map(async (cat) => {
