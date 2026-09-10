@@ -393,7 +393,14 @@ router.post(
         const checkOutDay = new Date(checkOutDate.getFullYear(), checkOutDate.getMonth(), checkOutDate.getDate());
         const calendarDays = Math.round((checkOutDay - checkInDay) / (1000 * 60 * 60 * 24));
         totalUnits = Math.max(1, Math.ceil(calendarDays / 7));
-        totalPrice = totalUnits * weeklyPrice;
+        const graduated = property.pricing.graduatedWeekly;
+        if (graduated?.enabled && graduated.thresholdWeeks > 0 && totalUnits > graduated.thresholdWeeks) {
+          const weeksAtBase = graduated.thresholdWeeks;
+          const weeksAtSteppedRate = totalUnits - graduated.thresholdWeeks;
+          totalPrice = weeksAtBase * weeklyPrice + weeksAtSteppedRate * (graduated.rateAfterThreshold || weeklyPrice);
+        } else {
+          totalPrice = totalUnits * weeklyPrice;
+        }
 
       } else if (effectivePricingType === "MONTHLY") {
         if (monthlyPrice <= 0) {

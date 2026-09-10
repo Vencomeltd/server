@@ -107,6 +107,15 @@ const propertySchema = new mongoose.Schema(
         ],
         default: [],
       },
+      // Graduated/stepped WEEKLY pricing -- e.g. £80/week for the first 8
+      // weeks, then £100/week after. Only applies to WEEKLY bookings (a
+      // host's most common ask); the base `weekly` rate above still covers
+      // weeks up to thresholdWeeks.
+      graduatedWeekly: {
+        enabled: { type: Boolean, default: false },
+        thresholdWeeks: { type: Number, min: 1, default: 0 },
+        rateAfterThreshold: { type: Number, min: 0, default: 0 },
+      },
     },
     bookingSettings: {
       approveFirstFive: { type: Boolean, default: true },
