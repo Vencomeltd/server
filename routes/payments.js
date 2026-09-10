@@ -61,7 +61,7 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       payment_intent_data: isDeferred ? { capture_method: "manual" } : undefined,
       // success_url: `${process.env.CLIENT_URL_DEV}/my-bookings?success=true`,
       // cancel_url: `${process.env.CLIENT_URL_DEV}/my-bookings?cancel=true`,
-      success_url: `${process.env.CLIENT_URL}/property/${booking.property._id}?success=true`,
+      success_url: `${process.env.CLIENT_URL}/property/${booking.property._id}?success=true&bookingId=${booking._id}&value=${booking.totalPrice}`,
       cancel_url: `${process.env.CLIENT_URL}/property/${booking.property._id}?cancel=true`,
       metadata: { bookingId: booking._id.toString() },
     });
