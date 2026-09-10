@@ -725,7 +725,7 @@ router.get("/properties", async (req, res) => {
   if (q) filter.title = { $regex: q, $options: "i" };
   const skip = (parseInt(page) - 1) * parseInt(limit);
   const [properties, total] = await Promise.all([
-    Property.find(filter).populate("host", "firstName lastName email displayName").populate("category", "name").sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
+    Property.find(filter).populate("host", "firstName lastName email displayName").populate("category", "name").sort({ order: 1, createdAt: -1 }).skip(skip).limit(parseInt(limit)),
     Property.countDocuments(filter),
   ]);
   res.json({ properties, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
