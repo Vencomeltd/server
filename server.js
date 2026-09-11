@@ -349,6 +349,8 @@ app.use("/uploads", express.static("uploads"));
 app.use("/api/blog", require("./routes/blog"));
 app.use("/api/contact", require("./routes/contact"));
 app.use("/api/prospect-emails", require("./routes/prospectEmails"));
+app.use("/api/platform-settings", require("./routes/publicSettings"));
+app.use("/api/translate", require("./routes/translate"));
 
 // Dynamic sitemap
 app.get("/sitemap.xml", async (req, res) => {
