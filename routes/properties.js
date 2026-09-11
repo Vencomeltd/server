@@ -249,6 +249,15 @@ router.post(
           availability = "all";
         }
       }
+      let deposit = { enabled: false, amount: 0 };
+      if (req.body.deposit) {
+        try {
+          const parsed = JSON.parse(req.body.deposit);
+          deposit = { enabled: !!parsed.enabled, amount: parsed.enabled ? Number(parsed.amount) || 0 : 0 };
+        } catch {
+          deposit = { enabled: false, amount: 0 };
+        }
+      }
       const host = req.user.id;
 
       // Optional iCal feed URL set during creation (same field the
@@ -501,6 +510,7 @@ router.post(
         categories: categoriesArray,
         subcategories: subcategoriesArray,
         availability,
+        deposit,
         timeBlocks,
         unitsCount: parseInt(req.body.unitsCount, 10) || 1,
         blockedDates: blockedDates.map((d) => ({
@@ -1257,7 +1267,8 @@ router.put(
       pricing,
       bookingSettings,
       blockedDates,
-      availability;
+      availability,
+      deposit;
     try {
       location = parseField("location", "location");
       coordinates = parseField("coordinates", "coordinates");
@@ -1266,6 +1277,7 @@ router.put(
       pricing = parseField("pricing", "pricing");
       bookingSettings = parseField("bookingSettings", "bookingSettings");
       blockedDates = parseField("blockedDates", "blockedDates");
+      deposit = parseField("deposit", "deposit");
     } catch (e) {
       cleanupTempFiles([
         ...(req.files?.images || []),
@@ -1382,6 +1394,7 @@ router.put(
     }
     // FIX: availability and blockedDates were missing from PUT
     if (availability) property.availability = availability;
+    if (deposit) property.deposit = { enabled: !!deposit.enabled, amount: deposit.enabled ? Number(deposit.amount) || 0 : 0 };
     if (blockedDates) {
       // Preserve bookingId/externalEventId/unitIndex -- dropping them here
       // (as this used to) breaks the auto-unblock on decline/cancel, the
