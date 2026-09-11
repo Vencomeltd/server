@@ -25,7 +25,7 @@ router.post("/", async (req, res) => {
 
   try {
     const response = await fetch(
-      `https://translation.googleapis.com/language/translate2?key=${apiKey}`,
+      `https://translation.googleapis.com/language/translate/v2?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
