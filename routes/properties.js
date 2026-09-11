@@ -839,7 +839,13 @@ router.get("/search", async (req, res) => {
     const searchTerm = searchQuery || location;
 
     if (searchTerm) {
-      const regex = new RegExp(searchTerm, "i");
+      // Escape regex metacharacters -- searchTerm is raw user input, and an
+      // unescaped "(", "*", etc. throws inside new RegExp(), 500ing the
+      // whole search for anyone who types one (found via a systematic
+      // search-query test pass; special characters should just be matched
+      // as literal text, not break the query).
+      const escapedSearchTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(escapedSearchTerm, "i");
       query.$or = [
         { title: regex },
         { description: regex },
