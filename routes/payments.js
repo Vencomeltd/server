@@ -74,17 +74,21 @@ router.post("/create-checkout-session", auth, async (req, res) => {
       ],
       mode: "payment",
       payment_intent_data: isDeferred ? { capture_method: "manual" } : undefined,
-      // success_url: `${process.env.CLIENT_URL_DEV}/my-bookings?success=true`,
-      // cancel_url: `${process.env.CLIENT_URL_DEV}/my-bookings?cancel=true`,
-      success_url: `${process.env.CLIENT_URL}/property/${booking.property._id}?success=true&bookingId=${booking._id}&value=${booking.totalPrice}`,
-      cancel_url: `${process.env.CLIENT_URL}/property/${booking.property._id}?cancel=true`,
+      // Embedded (not hosted-redirect) mode -- renders inline on our own
+      // /checkout/:bookingId page via @stripe/react-stripe-js's
+      // EmbeddedCheckout instead of a stripe.com-branded page. return_url is
+      // still required by the API even though card payments normally
+      // complete inline -- it's only used if a redirect-based step (e.g.
+      // 3D Secure) is needed.
+      ui_mode: "embedded",
+      return_url: `${process.env.CLIENT_URL}/checkout/${booking._id}?session_id={CHECKOUT_SESSION_ID}`,
       metadata: { bookingId: booking._id.toString() },
     });
 
     // Save session ID
     await booking.save();
 
-    res.json({ url: session.url });
+    res.json({ clientSecret: session.client_secret });
   } catch (err) {
     console.error("STRIPE ERROR:", err); // ← See the real problem
     res.status(500).json({ error: err.message });
