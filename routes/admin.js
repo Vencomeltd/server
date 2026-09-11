@@ -127,6 +127,40 @@ router.use(["/payments", "/payouts", "/invoices", "/commission"], requireAdminRo
 router.use(["/markets", "/categories", "/broadcast"], requireAdminRole("content"));
 router.use(["/team", "/settings"], requireAdminRole());
 
+// ─── Visitor analytics -- country + how they found the site ───────────────────
+router.get("/analytics/visitors", async (req, res) => {
+  try {
+    const VisitorSession = require("../models/VisitorSession");
+    const days = Math.min(365, parseInt(req.query.days, 10) || 30);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const [byCountry, bySource, total] = await Promise.all([
+      VisitorSession.aggregate([
+        { $match: { createdAt: { $gte: since } } },
+        { $group: { _id: "$country", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+      ]),
+      VisitorSession.aggregate([
+        { $match: { createdAt: { $gte: since } } },
+        { $group: { _id: "$source", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+      VisitorSession.countDocuments({ createdAt: { $gte: since } }),
+    ]);
+
+    res.json({
+      success: true,
+      total,
+      byCountry: byCountry.map((r) => ({ country: r._id, count: r.count })),
+      bySource: bySource.map((r) => ({ source: r._id, count: r.count })),
+    });
+  } catch (err) {
+    console.error("Visitor analytics error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // ─── Dashboard stats ──────────────────────────────────────────────────────────
 router.get("/stats", async (req, res) => {
   try {
