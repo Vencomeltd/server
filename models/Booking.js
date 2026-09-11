@@ -119,6 +119,30 @@ const bookingSchema = new mongoose.Schema(
     stripeTransferId: String,
     disputeFrozen: { type: Boolean, default: false },
     disputeId: String,
+    // Optional security deposit -- separate from rent/totalPrice above and
+    // from the Stripe-chargeback "dispute" fields above (disputeId/
+    // disputeFrozen). A deposit "dispute" is an internal VenCome process
+    // (guest contesting a host's damage claim), not a Stripe chargeback.
+    deposit: {
+      amount: { type: Number, default: 0 },
+      status: {
+        type: String,
+        enum: ["none", "charged", "refunded", "claimed", "partially_claimed"],
+        default: "none",
+      },
+      chargedAt: Date,
+      refundedAt: Date,
+      claim: {
+        amount: Number,
+        reason: String,
+        photoUrls: [String],
+        filedAt: Date,
+        disputeDeadline: Date,
+        disputeStatus: { type: String, enum: ["none", "disputed", "resolved"], default: "none" },
+        resolvedAt: Date,
+        resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      },
+    },
     reviewed: { type: Boolean, default: false },
     completed: { type: Boolean, default: false },
     review: { type: mongoose.Schema.Types.ObjectId, ref: "Review" },

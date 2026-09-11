@@ -117,6 +117,13 @@ const propertySchema = new mongoose.Schema(
         rateAfterThreshold: { type: Number, min: 0, default: 0 },
       },
     },
+    // Optional per-listing security deposit -- charged alongside rent at
+    // checkout, held in the host's wallet (see HostWallet/WalletTransaction),
+    // separate from rent/pricing above.
+    deposit: {
+      enabled: { type: Boolean, default: false },
+      amount: { type: Number, min: 0, default: 0 },
+    },
     bookingSettings: {
       approveFirstFive: { type: Boolean, default: true },
       instantBook: { type: Boolean, default: false },
