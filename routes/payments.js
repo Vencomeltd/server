@@ -56,6 +56,21 @@ router.post("/create-checkout-session", auth, async (req, res) => {
           },
           quantity: 1,
         },
+        ...(booking.deposit?.amount > 0
+          ? [
+              {
+                price_data: {
+                  currency: "gbp",
+                  product_data: {
+                    name: "Security deposit",
+                    description: "Held by the host, refunded (or claimed against, if there's damage) after your stay",
+                  },
+                  unit_amount: Math.round(booking.deposit.amount * 100),
+                },
+                quantity: 1,
+              },
+            ]
+          : []),
       ],
       mode: "payment",
       payment_intent_data: isDeferred ? { capture_method: "manual" } : undefined,

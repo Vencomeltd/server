@@ -7,6 +7,7 @@ const User = require("../models/User");
 const sendEmail = require("../utils/sendEmail");
 const googleCalendar = require("../utils/googleCalendar");
 const outlookCalendar = require("../utils/outlookCalendar");
+const { creditDepositToWallet } = require("../utils/wallet");
 
 router.post("/", express.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
@@ -47,6 +48,7 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
         const releaseDate = new Date(booking.checkOut);
         releaseDate.setHours(releaseDate.getHours() + 24);
         booking.escrowReleaseDate = releaseDate;
+        await creditDepositToWallet(booking);
         await booking.save();
 
         await Payment.create({

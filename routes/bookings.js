@@ -21,6 +21,7 @@ const {
   resolveDayHours,
 } = require("../utils/pricing");
 const { resolveCommissionRate } = require("../utils/commission");
+const { creditDepositToWallet, refundDeposit } = require("../utils/wallet");
 const googleCalendar = require("../utils/googleCalendar");
 const outlookCalendar = require("../utils/outlookCalendar");
 
@@ -489,6 +490,15 @@ router.post(
         totalPrice,
         platformFee,
         hostAmount,
+        // Optional security deposit, charged alongside rent as a second
+        // Stripe Checkout line item (see routes/payments.js) but kept
+        // entirely separate from totalPrice/platformFee/hostAmount above --
+        // it must never factor into commission or the rent escrow-release
+        // transfer, only into the host's wallet (see HostWallet).
+        deposit: {
+          amount: property.deposit?.enabled ? property.deposit.amount : 0,
+          status: "none",
+        },
         discountApplied: Math.round(discount * 100) / 100,
         // Gated on effectivePricingType (what this booking actually used),
         // not property.pricing.pricingType (the property's single default
@@ -911,6 +921,7 @@ async function applyBookingDecision(booking, status, io) {
     const releaseDate = new Date(booking.checkOut);
     releaseDate.setHours(releaseDate.getHours() + 24);
     booking.escrowReleaseDate = releaseDate;
+    await creditDepositToWallet(booking);
 
     await Payment.findOneAndUpdate(
       { booking: booking._id },
@@ -1380,6 +1391,15 @@ router.delete("/:id/cancel", auth, async (req, res) => {
 
     } // end awaitingCapture / normal-refund branch
 
+    // Deposit always fully refunds on a pre-checkin cancellation, regardless
+    // of whichever rent-refund tier applied above (the deposit isn't rent --
+    // there's nothing to claim against since no stay ever happened).
+    try {
+      await refundDeposit(booking);
+    } catch (depositRefundErr) {
+      console.error(`Deposit refund failed for booking ${booking._id}:`, depositRefundErr.message);
+    }
+
     // ── Update booking ────────────────────────────────────────────────────────
     booking.status = "cancelled";
     booking.cancelledBy = cancelledBy;
@@ -1436,6 +1456,105 @@ router.delete("/:id/cancel", auth, async (req, res) => {
   } catch (err) {
     console.error("Cancellation error:", err);
     return res.status(500).json({ error: "Failed to cancel booking" });
+  }
+});
+
+// ─── Deposit: clean refund ────────────────────────────────────────────────────
+// POST /bookings/:id/deposit/refund -- host triggers a full deposit refund
+// (the "Refund deposit" button on a completed booking).
+router.post("/:id/deposit/refund", auth, async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.host.toString() !== req.user.id) {
+      return res.status(403).json({ error: "Only the host can refund this deposit" });
+    }
+    if (booking.deposit?.status !== "charged") {
+      return res.status(400).json({ error: `Deposit is not in a refundable state (status: ${booking.deposit?.status || "none"})` });
+    }
+
+    await refundDeposit(booking);
+    await booking.save();
+
+    res.json({ success: true, deposit: booking.deposit });
+  } catch (err) {
+    console.error("Deposit refund error:", err);
+    res.status(500).json({ error: "Failed to refund deposit", detail: err.message });
+  }
+});
+
+// ─── Deposit: file a damage claim ─────────────────────────────────────────────
+// POST /bookings/:id/deposit/claim -- host files a claim instead of refunding.
+// Opens a 48h window for the guest to dispute before it auto-settles (see the
+// auto-release cron in utils/depositAutoRelease.js).
+router.post("/:id/deposit/claim", auth, async (req, res) => {
+  try {
+    const { amount, reason, photoUrls } = req.body;
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.host.toString() !== req.user.id) {
+      return res.status(403).json({ error: "Only the host can file a claim on this deposit" });
+    }
+    if (booking.deposit?.status !== "charged") {
+      return res.status(400).json({ error: `Deposit is not in a claimable state (status: ${booking.deposit?.status || "none"})` });
+    }
+    const claimAmount = Number(amount);
+    if (!claimAmount || claimAmount <= 0 || claimAmount > booking.deposit.amount) {
+      return res.status(400).json({ error: `Claim amount must be between 0 and the deposit amount (£${booking.deposit.amount})` });
+    }
+    if (!reason || !Array.isArray(photoUrls) || photoUrls.length === 0) {
+      return res.status(400).json({ error: "A reason and at least one photo are required" });
+    }
+
+    const disputeDeadline = new Date();
+    disputeDeadline.setHours(disputeDeadline.getHours() + 48);
+
+    booking.deposit.status = claimAmount >= booking.deposit.amount ? "claimed" : "partially_claimed";
+    booking.deposit.claim = {
+      amount: claimAmount,
+      reason,
+      photoUrls,
+      filedAt: new Date(),
+      disputeDeadline,
+      disputeStatus: "none",
+    };
+    await booking.save();
+
+    res.json({ success: true, deposit: booking.deposit });
+  } catch (err) {
+    console.error("Deposit claim error:", err);
+    res.status(500).json({ error: "Failed to file claim", detail: err.message });
+  }
+});
+
+// ─── Deposit: guest disputes a filed claim ────────────────────────────────────
+// POST /bookings/:id/deposit/claim/dispute -- within the 48h window. Freezes
+// the claim for manual admin review instead of letting it auto-settle.
+router.post("/:id/deposit/claim/dispute", auth, async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.guest.toString() !== req.user.id) {
+      return res.status(403).json({ error: "Only the guest can dispute this claim" });
+    }
+    const claim = booking.deposit?.claim;
+    if (!claim?.filedAt) {
+      return res.status(400).json({ error: "No claim has been filed on this deposit" });
+    }
+    if (claim.disputeStatus !== "none") {
+      return res.status(400).json({ error: `Claim is already ${claim.disputeStatus}` });
+    }
+    if (new Date() > new Date(claim.disputeDeadline)) {
+      return res.status(400).json({ error: "The 48-hour dispute window has passed" });
+    }
+
+    booking.deposit.claim.disputeStatus = "disputed";
+    await booking.save();
+
+    res.json({ success: true, deposit: booking.deposit });
+  } catch (err) {
+    console.error("Deposit dispute error:", err);
+    res.status(500).json({ error: "Failed to dispute claim", detail: err.message });
   }
 });
 

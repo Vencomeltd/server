@@ -932,6 +932,62 @@ router.get("/bookings", async (req, res) => {
   }
 });
 
+// GET /admin/bookings/deposit-claims — damage claims needing (or awaiting)
+// resolution. Default to disputed-only (what actually needs a human); pass
+// ?status=all to see claimed/partially_claimed too, for visibility.
+router.get("/bookings/deposit-claims", async (req, res) => {
+  try {
+    const disputedOnly = req.query.status !== "all";
+    const query = disputedOnly
+      ? { "deposit.claim.disputeStatus": "disputed", "deposit.claim.resolvedAt": { $exists: false } }
+      : { "deposit.status": { $in: ["claimed", "partially_claimed"] } };
+
+    const bookings = await Booking.find(query)
+      .populate("property", "title coverImage")
+      .populate("guest", "firstName lastName displayName email")
+      .populate("host", "firstName lastName displayName email")
+      .sort({ "deposit.claim.filedAt": -1 })
+      .limit(100);
+
+    res.json({ success: true, bookings });
+  } catch (err) {
+    console.error("Admin deposit claims error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST /admin/bookings/:id/deposit/resolve — settles a disputed damage
+// claim. approvedAmount may be less than the originally-filed claim.amount
+// if the admin reduces it after reviewing evidence; the remainder (if any)
+// refunds to the guest.
+router.post("/bookings/:id/deposit/resolve", async (req, res) => {
+  try {
+    const { settleClaim } = require("../utils/wallet");
+    const { approvedAmount } = req.body;
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (!["claimed", "partially_claimed"].includes(booking.deposit?.status)) {
+      return res.status(400).json({ error: "No unresolved claim on this booking" });
+    }
+    if (booking.deposit.claim?.resolvedAt) {
+      return res.status(400).json({ error: "Claim already resolved" });
+    }
+    const amount = Number(approvedAmount);
+    if (isNaN(amount) || amount < 0 || amount > booking.deposit.amount) {
+      return res.status(400).json({ error: `approvedAmount must be between 0 and £${booking.deposit.amount}` });
+    }
+
+    await settleClaim(booking, amount, req.user?.id);
+    booking.deposit.claim.disputeStatus = "resolved";
+    await booking.save();
+
+    res.json({ success: true, deposit: booking.deposit });
+  } catch (err) {
+    console.error("Admin deposit claim resolve error:", err);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
 // GET /admin/payments — payment overview from bookings
 router.get("/payments", async (req, res) => {
   try {
