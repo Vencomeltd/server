@@ -846,6 +846,16 @@ router.get("/search", async (req, res) => {
       // as literal text, not break the query).
       const escapedSearchTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const regex = new RegExp(escapedSearchTerm, "i");
+
+      // Same test pass found that typing an exact category name (e.g.
+      // "Beauty & Cosmetics") returned 0 results even with real listings in
+      // it -- category/categories store the Category ObjectId, not its
+      // name, so text search never matched them. Look up which categories'
+      // names match the term, then match listings tagged with any of them.
+      const matchingCategoryIds = (
+        await Category.find({ name: regex }).select("_id")
+      ).map((c) => c._id);
+
       query.$or = [
         { title: regex },
         { description: regex },
@@ -858,6 +868,16 @@ router.get("/search", async (req, res) => {
         { "location.city": regex },
         { "location.country": regex },
         { "location.address": regex },
+        // subcategory/subcategories store the subcategory name as plain
+        // text already, so these match directly.
+        { subcategory: regex },
+        { subcategories: regex },
+        ...(matchingCategoryIds.length > 0
+          ? [
+              { category: { $in: matchingCategoryIds } },
+              { categories: { $in: matchingCategoryIds } },
+            ]
+          : []),
       ];
     }
 
