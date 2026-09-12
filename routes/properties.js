@@ -18,6 +18,7 @@ const { getUnitOccupancy, isFullyBooked } = require("../utils/unitAvailability")
 const sendEmail = require("../utils/sendEmail");
 const { geocodeAddress } = require("../utils/geocode");
 const { client } = require("../utils/redisClient");
+const geoip = require("geoip-lite");
 const { generateUniqueSlug, generateSlug } = require("../utils/slugify");
 
 const router = express.Router();
@@ -700,6 +701,72 @@ router.get("/", async (req, res) => {
   } catch (err) {
     console.error("Error fetching properties:", err);
     res.status(500).json({ error: "Server error", details: err.message });
+  }
+});
+
+function haversineDistanceKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Homepage's "Popular Spaces Near You" reused the exact same unsorted
+// /properties fetch as "Featured Spaces" -- no location logic at all, so it
+// showed the same admin-drag-order/creation-date list to every visitor
+// regardless of where they actually are. This geolocates the visitor by IP
+// (geoip-lite, same package/pattern already used for admin visitor
+// analytics -- no browser permission prompt, unlike navigator.geolocation)
+// and sorts active listings by real distance from that point. Falls back to
+// unsorted (sorted: false) when the IP can't be geolocated (localhost in
+// dev, some VPNs/proxies) so the section still shows something.
+router.get("/near-me", async (req, res) => {
+  try {
+    const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
+    const geo = geoip.lookup(ip);
+
+    const properties = await Property.find({ isActive: true })
+      .populate("host", "firstName lastName displayName email profileImage")
+      .populate("category", "name")
+      .populate("categories", "name")
+      .limit(100);
+
+    if (!geo?.ll) {
+      return res.json({ success: true, properties, sorted: false });
+    }
+
+    const [visitorLat, visitorLng] = geo.ll;
+    const withDistance = properties.map((property) => {
+      const lat = property.coordinates?.latitude;
+      const lng = property.coordinates?.longitude;
+      const distance =
+        typeof lat === "number" && typeof lng === "number"
+          ? haversineDistanceKm(visitorLat, visitorLng, lat, lng)
+          : null;
+      return { property, distance };
+    });
+
+    // Listings without coordinates yet (geocoding gap) sink to the end
+    // rather than being dropped, so they're still discoverable.
+    withDistance.sort((a, b) => {
+      if (a.distance === null && b.distance === null) return 0;
+      if (a.distance === null) return 1;
+      if (b.distance === null) return -1;
+      return a.distance - b.distance;
+    });
+
+    res.json({
+      success: true,
+      properties: withDistance.map((w) => w.property),
+      sorted: true,
+      visitorCity: geo.city || null,
+    });
+  } catch (err) {
+    console.error("Error fetching near-me properties:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
