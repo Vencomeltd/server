@@ -8,6 +8,7 @@ const sendEmail = require("../utils/sendEmail");
 const googleCalendar = require("../utils/googleCalendar");
 const outlookCalendar = require("../utils/outlookCalendar");
 const { creditDepositToWallet } = require("../utils/wallet");
+const { sendBookingCreatedNotifications } = require("../utils/bookingNotifications");
 
 router.post("/", express.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
@@ -26,7 +27,7 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
       const bookingId = session.metadata?.bookingId;
       if (!bookingId) return res.json({ received: true });
 
-      const booking = await Booking.findById(bookingId).populate("property", "title host");
+      const booking = await Booking.findById(bookingId).populate("property", "title host location");
       if (!booking || booking.isPaid) return res.json({ received: true });
 
       booking.stripeSessionId = session.id;
@@ -42,6 +43,9 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
       const total = booking.totalPrice;
       const platformFee = booking.platformFee;
       const hostAmount = booking.hostAmount;
+      const io = req.app.get("io");
+      const guestUser = await User.findById(booking.guest);
+      const hostUser = await User.findById(booking.property.host);
 
       if (captured) {
         booking.isPaid = true;
@@ -50,6 +54,7 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
         booking.escrowReleaseDate = releaseDate;
         await creditDepositToWallet(booking);
         await booking.save();
+        await sendBookingCreatedNotifications(booking, booking.property, guestUser, hostUser, io);
 
         await Payment.create({
           booking: booking._id,
@@ -98,6 +103,7 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
         // the authorization is released on decline / 24h expiry.
         booking.paymentAuthorizedAt = new Date();
         await booking.save();
+        await sendBookingCreatedNotifications(booking, booking.property, guestUser, hostUser, io);
 
         await Payment.create({
           booking: booking._id,
@@ -112,14 +118,13 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
         });
       }
 
-      const io = req.app.get("io");
       io?.to(`user_${booking.guest}`).emit("paymentSuccess", { bookingId });
 
       // Only send a "payment confirmed" email when a charge actually happened.
       // For Request to Book, the booking-creation email already explains that
       // the guest won't be charged until the host approves.
       if (captured) {
-        const user = await User.findById(booking.guest);
+        const user = guestUser;
         if (user) {
           const displayName = user.displayName || user.firstName || "there";
           sendEmail({
