@@ -95,6 +95,25 @@ router.post("/create-checkout-session", auth, async (req, res) => {
   }
 });
 
+// GET: Check a completed Checkout Session -- used by Checkout.jsx when Stripe
+// falls back to return_url instead of firing the embedded checkout's
+// onComplete callback (e.g. a redirect-based step like 3D Secure was
+// needed), so the page can recognize the payment succeeded instead of
+// starting a brand new checkout session.
+router.get("/session-status/:sessionId", auth, async (req, res) => {
+  try {
+    const session = await stripe.checkout.sessions.retrieve(req.params.sessionId);
+    if (session.metadata?.bookingId) {
+      const booking = await Booking.findOne({ _id: session.metadata.bookingId, guest: req.user.id });
+      if (!booking) return res.status(404).json({ error: "Booking not found" });
+    }
+    res.json({ status: session.status, bookingId: session.metadata?.bookingId });
+  } catch (err) {
+    console.error("Session status check error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // Add payment method
 router.post("/", auth, async (req, res) => {
   const { tokenId, last4, brand } = req.body;
