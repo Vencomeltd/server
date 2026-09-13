@@ -12,6 +12,7 @@ const Report = require("../models/Report");
 const SupportTicket = require("../models/SupportTicket");
 const { geocodeAddress } = require("../utils/geocode");
 const Payment = require("../models/Payment");
+const Payout = require("../models/Payout");
 const Review = require("../models/Review");
 const Market = require("../models/Market");
 const Category = require("../models/Category");
@@ -1098,6 +1099,20 @@ router.post("/payments/:bookingId/release", async (req, res) => {
     booking.escrowReleased = true;
     booking.stripeTransferId = transfer.id;
     await booking.save();
+
+    const payment = await Payment.findOne({ booking: booking._id });
+    await Payout.create({
+      host: booking.host._id,
+      booking: booking._id,
+      payment: payment?._id,
+      amount: booking.hostAmount,
+      platformFee: booking.platformFee,
+      totalReceived: booking.totalPrice,
+      stripeTransferId: transfer.id,
+      payoutMethod: "bank_account",
+      status: "paid",
+      releasedAt: new Date(),
+    });
 
     if (booking.host.phoneNumber && booking.host.isPhoneVerified) {
       sendSMS({

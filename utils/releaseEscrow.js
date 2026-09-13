@@ -1,5 +1,7 @@
 const cron = require("node-cron");
 const Booking = require("../models/Booking");
+const Payment = require("../models/Payment");
+const Payout = require("../models/Payout");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const User = require("../models/User");
 const sendSMS = require("./sendSMS");
@@ -42,6 +44,20 @@ module.exports = function setupEscrowRelease() {
           booking.escrowReleased = true;
           booking.stripeTransferId = transfer.id;
           await booking.save();
+
+          const payment = await Payment.findOne({ booking: booking._id });
+          await Payout.create({
+            host: host._id,
+            booking: booking._id,
+            payment: payment?._id,
+            amount: booking.hostAmount,
+            platformFee: booking.platformFee,
+            totalReceived: booking.totalPrice,
+            stripeTransferId: transfer.id,
+            payoutMethod: "bank_account",
+            status: "paid",
+            releasedAt: new Date(),
+          });
 
           console.log(`[Escrow] Released $${amountToHost / 100} to host ${host._id} for booking ${booking._id}`);
 
