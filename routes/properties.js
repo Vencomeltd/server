@@ -882,6 +882,7 @@ router.get("/search", async (req, res) => {
     searchQuery || "",
     location || "",
     category || "",
+    subcategory || "",
     minPrice || "",
     maxPrice || "",
     checkIn || "",
