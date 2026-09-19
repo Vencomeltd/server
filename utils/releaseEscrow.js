@@ -79,6 +79,22 @@ module.exports = function setupEscrowRelease() {
           if (makeUserHost.isStaleAccountError(transferErr)) {
             await makeUserHost.clearStaleStripeAccount(host._id).catch(() => {});
             console.error(`[Escrow] Host ${host._id} has a stale pre-live-mode Stripe account -- cleared, needs to reconnect.`);
+          } else {
+            // Otherwise this is very likely Stripe refusing the transfer
+            // because the destination account is still "Restricted" --
+            // outstanding verification requirements (identity, business
+            // info, banking) that only the host themselves can clear.
+            // Nothing to auto-fix here, but log it plainly instead of
+            // letting it look like the same generic failure every hour.
+            try {
+              const account = await stripe.accounts.retrieve(host.stripeAccountId);
+              const outstanding = account.requirements?.currently_due || [];
+              if (outstanding.length > 0) {
+                console.error(`[Escrow] Host ${host._id} (booking ${booking._id}) is blocked on Stripe verification: ${outstanding.join(", ")}`);
+              }
+            } catch (lookupErr) {
+              console.error(`[Escrow] Requirements lookup failed for host ${host._id}:`, lookupErr.message);
+            }
           }
         }
       }
