@@ -5,6 +5,7 @@ const Payout = require("../models/Payout");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const User = require("../models/User");
 const sendSMS = require("./sendSMS");
+const makeUserHost = require("./stripeConnect");
 
 module.exports = function setupEscrowRelease() {
   cron.schedule("0 * * * *", async () => {
@@ -71,6 +72,14 @@ module.exports = function setupEscrowRelease() {
           }
         } catch (transferErr) {
           console.error(`[Escrow] Transfer failed for booking ${booking._id}:`, transferErr.message);
+          // This host's account predates Stripe's test-to-live switch --
+          // clear it so they get prompted to reconnect next time they open
+          // Payouts, instead of this transfer silently failing on this same
+          // dead account id every hour forever.
+          if (makeUserHost.isStaleAccountError(transferErr)) {
+            await makeUserHost.clearStaleStripeAccount(host._id).catch(() => {});
+            console.error(`[Escrow] Host ${host._id} has a stale pre-live-mode Stripe account -- cleared, needs to reconnect.`);
+          }
         }
       }
     } catch (err) {

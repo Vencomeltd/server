@@ -43,14 +43,32 @@ router.get("/connect/status", auth, async (req, res) => {
 // Stripe account links expire quickly, so one isn't generated in advance.
 router.post("/connect/onboarding-link", auth, blockDuringImpersonation, async (req, res) => {
   try {
-    const user = await makeUserHost(req.user.id);
+    let user = await makeUserHost(req.user.id);
 
-    const accountLink = await stripe.accountLinks.create({
-      account: user.stripeAccountId,
-      refresh_url: `${process.env.CLIENT_URL}/settings?payout=refresh`,
-      return_url: `${process.env.CLIENT_URL}/settings?payout=return`,
-      type: "account_onboarding",
-    });
+    let accountLink;
+    try {
+      accountLink = await stripe.accountLinks.create({
+        account: user.stripeAccountId,
+        refresh_url: `${process.env.CLIENT_URL}/settings?payout=refresh`,
+        return_url: `${process.env.CLIENT_URL}/settings?payout=return`,
+        type: "account_onboarding",
+      });
+    } catch (err) {
+      if (makeUserHost.isStaleAccountError(err)) {
+        // This account was created before Stripe switched from test to live
+        // mode -- clear it and create a fresh one, then retry once.
+        await makeUserHost.clearStaleStripeAccount(req.user.id);
+        user = await makeUserHost(req.user.id);
+        accountLink = await stripe.accountLinks.create({
+          account: user.stripeAccountId,
+          refresh_url: `${process.env.CLIENT_URL}/settings?payout=refresh`,
+          return_url: `${process.env.CLIENT_URL}/settings?payout=return`,
+          type: "account_onboarding",
+        });
+      } else {
+        throw err;
+      }
+    }
 
     res.json({ url: accountLink.url });
   } catch (err) {
@@ -178,6 +196,16 @@ router.post("/", auth, blockDuringImpersonation, async (req, res) => {
       });
     } catch (err) {
       console.error("Add card external account error:", err.message);
+      // This account may predate Stripe's test-to-live switch -- clear it
+      // and ask the host to reconnect via onboarding rather than retrying
+      // against a card token that's tied to the now-broken account id.
+      if (makeUserHost.isStaleAccountError(err)) {
+        await makeUserHost.clearStaleStripeAccount(req.user.id);
+        return res.status(400).json({
+          error:
+            "Your payout account needs to be reconnected after a platform update. Please go to Payouts and reconnect, then try adding your card again.",
+        });
+      }
       // Stripe rejects debit-card payout destinations outright until the
       // connected account clears its own verification requirements (business
       // info, identity, etc) -- when that's the cause, Stripe's raw message

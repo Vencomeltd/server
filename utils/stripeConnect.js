@@ -32,4 +32,26 @@ async function makeUserHost(userId) {
   return user;
 }
 
+// VenCome switched Stripe from test mode to live mode mid-project. Any host
+// who connected a payout account before that switch has a stripeAccountId
+// that belongs to the old test-mode Stripe environment -- every live-mode
+// API call referencing it (transfers, external accounts, onboarding links)
+// fails with this exact message, silently and forever, since nothing
+// previously checked for it. Call sites that touch a host's Stripe account
+// should check this on failure and clear the stale id so the next attempt
+// creates a fresh, correctly live-mode account instead of retrying the same
+// broken reference on a loop.
+function isStaleAccountError(err) {
+  return /test mode|live mode/i.test(err?.message || "");
+}
+
+async function clearStaleStripeAccount(userId) {
+  await User.findByIdAndUpdate(userId, {
+    stripeAccountId: null,
+    stripeOnboardingStatus: "pending",
+  });
+}
+
 module.exports = makeUserHost;
+module.exports.isStaleAccountError = isStaleAccountError;
+module.exports.clearStaleStripeAccount = clearStaleStripeAccount;
