@@ -70,10 +70,27 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                     <td style="padding: 6px 0; color: #666;">Guests</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">${booking.guests}</td>
                   </tr>
+                  ${booking.status === "confirmed" ? `
+                  <tr>
+                    <td style="padding: 6px 0; color: #666;">Booking Amount</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${booking.totalPrice}</td>
+                  </tr>
+                  ${booking.deposit?.amount > 0 ? `
+                  <tr>
+                    <td style="padding: 6px 0; color: #666;">Deposit Amount</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${booking.deposit.amount}</td>
+                  </tr>
+                  ` : ''}
+                  <tr>
+                    <td style="padding: 8px 0; color: #0A1628; font-weight: 700; border-top: 1px solid #E5E7EB;">Total Paid</td>
+                    <td style="padding: 8px 0; text-align: right; font-weight: 700; border-top: 1px solid #E5E7EB;">£${(booking.totalPrice + (booking.deposit?.amount || 0)).toFixed(2)}</td>
+                  </tr>
+                  ` : `
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Total to be paid</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${booking.totalPrice}</td>
                   </tr>
+                  `}
                 </table>
               </div>
               ${booking.status === "pending" ? `
