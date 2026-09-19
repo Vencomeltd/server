@@ -178,6 +178,24 @@ router.post("/", auth, blockDuringImpersonation, async (req, res) => {
       });
     } catch (err) {
       console.error("Add card external account error:", err.message);
+      // Stripe rejects debit-card payout destinations outright until the
+      // connected account clears its own verification requirements (business
+      // info, identity, etc) -- when that's the cause, Stripe's raw message
+      // is a generic/technical one that doesn't tell the host what to
+      // actually do. Check requirements directly so we can point them at the
+      // real fix instead of showing that raw message.
+      try {
+        const account = await stripe.accounts.retrieve(hostUser.stripeAccountId);
+        const outstanding = account.requirements?.currently_due || [];
+        if (outstanding.length > 0) {
+          return res.status(400).json({
+            error:
+              "Your payout account needs a bit more verification before a debit card can be added. Please finish the verification steps in Settings first, then try again.",
+          });
+        }
+      } catch (lookupErr) {
+        console.error("Requirements lookup after failed card add error:", lookupErr.message);
+      }
       return res.status(400).json({ error: err.message || "Failed to add card" });
     }
 
