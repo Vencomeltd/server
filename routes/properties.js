@@ -1428,9 +1428,14 @@ router.put(
 
     if (req.files?.images?.length > 0) {
       try {
+        // If the DELETE /:id/images route auto-unpublished this listing
+        // for having zero photos, bring it back now that it has at least
+        // one again -- see that route for why it was turned off.
+        const wasEmpty = property.images.length === 0;
         const newR2Urls = await uploadFilesToR2(req.files.images);
         property.images = [...property.images, ...newR2Urls];
         if (!property.coverImage) property.coverImage = newR2Urls[0];
+        if (wasEmpty && !property.isActive) property.isActive = true;
       } catch (uploadError) {
         console.error("Error uploading to R2:", uploadError);
         return res.status(500).json({
@@ -1909,14 +1914,16 @@ router.delete("/:id/images", auth, async (req, res) => {
       });
     }
 
-    // A published listing must always have at least one photo -- this is
-    // the only path that removes images from an existing property (PUT
-    // only ever appends), so it's the one place that needs this guard.
+    // Hosts asked to be able to clear every photo and start fresh with new
+    // uploads, rather than being forced to add a replacement before they're
+    // allowed to remove the last old one. A listing with zero photos still
+    // shouldn't be visible to guests though, so drop it from public search
+    // instead of blocking the deletion -- it comes back automatically the
+    // next time the host uploads a photo via the PUT /:id save.
     const remaining = property.images.filter((img) => !imageUrls.includes(img));
-    if (remaining.length === 0) {
-      return res.status(400).json({
-        error: "You must keep at least one photo. Add a new one before removing this one.",
-      });
+    const willBeEmpty = remaining.length === 0;
+    if (willBeEmpty) {
+      property.isActive = false;
     }
 
     try {
@@ -1942,7 +1949,10 @@ router.delete("/:id/images", auth, async (req, res) => {
 
     res.json({
       success: true,
-      message: "Images deleted successfully",
+      message: willBeEmpty
+        ? "Images deleted. This listing is now unpublished until you add a new photo."
+        : "Images deleted successfully",
+      unpublished: willBeEmpty,
       property,
     });
   } catch (err) {
