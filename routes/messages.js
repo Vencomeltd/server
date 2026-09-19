@@ -6,6 +6,7 @@ const Booking = require("../models/Booking");
 const User = require("../models/User");
 const auth = require("../middleware/auth");
 const sendEmail = require("../utils/sendEmail");
+const containsBlockedContent = require("../utils/messageFilter");
 const router = express.Router();
 
 // GET: Get all conversations for current user
@@ -151,6 +152,12 @@ router.post("/enquiry", auth, async (req, res) => {
     const { propertyId, checkIn, checkOut, guests, durationType, totalPrice, message } = req.body;
     const guestId = req.user.id;
 
+    if (message && containsBlockedContent(message)) {
+      return res.status(400).json({
+        error: "Sharing contact details or social media is not allowed.",
+      });
+    }
+
     const property = await Property.findById(propertyId).populate("host", "firstName lastName displayName profileImage name email");
     if (!property) return res.status(404).json({ error: "Property not found" });
 
@@ -246,6 +253,12 @@ router.post("/", auth, async (req, res) => {
       conversation.guest.toString() !== userId
     ) {
       return res.status(403).json({ error: "Not authorised" });
+    }
+
+    if (containsBlockedContent(text)) {
+      return res.status(400).json({
+        error: "Sharing contact details or social media is not allowed.",
+      });
     }
 
     const message = new Message({
