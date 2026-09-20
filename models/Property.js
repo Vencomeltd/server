@@ -149,6 +149,20 @@ const propertySchema = new mongoose.Schema(
     // newest-first sort (createdAt) still applies as a tiebreaker.
     order: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
+    // Separate from isActive, which also gets flipped off by unrelated
+    // things (deleting every photo, an admin later deactivating a live
+    // listing) -- this specifically tracks whether an admin has ever
+    // reviewed this listing at all. New listings start pending_review and
+    // isActive:false (see POST / below); admin approve/reject in
+    // PATCH /admin/properties/:id sets this alongside isActive. A listing
+    // that's already been approved and later loses isActive for an
+    // unrelated reason (e.g. zero photos) does NOT need admin re-review --
+    // it keeps moderationStatus "approved" and just needs isActive back on.
+    moderationStatus: {
+      type: String,
+      enum: ["pending_review", "approved", "rejected"],
+      default: "pending_review",
+    },
     host: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     category: { type: mongoose.Schema.Types.ObjectId, ref: "Category" },
     subcategory: { type: String, default: "" },

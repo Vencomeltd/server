@@ -804,9 +804,13 @@ router.patch("/support-tickets/:id", async (req, res) => {
 
 // ─── Properties ───────────────────────────────────────────────────────────────
 router.get("/properties", async (req, res) => {
-  const { page = 1, limit = 20, q } = req.query;
+  const { page = 1, limit = 20, q, moderationStatus } = req.query;
   const filter = {};
   if (q) filter.title = { $regex: q, $options: "i" };
+  // Lets the moderation queue query platform-wide regardless of whatever
+  // page the main "all listings" browser happens to be on, instead of the
+  // queue being derived by filtering just the current page's 50 results.
+  if (moderationStatus) filter.moderationStatus = moderationStatus;
   const skip = (parseInt(page) - 1) * parseInt(limit);
   const [properties, total] = await Promise.all([
     Property.find(filter).populate("host", "firstName lastName email displayName").populate("category", "name").sort({ order: 1, createdAt: -1 }).skip(skip).limit(parseInt(limit)),
@@ -920,7 +924,17 @@ router.patch("/properties/:id", async (req, res) => {
   } = req.body;
 
   const update = {};
-  if (isActive !== undefined) update.isActive = isActive;
+  if (isActive !== undefined) {
+    update.isActive = isActive;
+    // Mirrors the same isActive/rejectionReason distinction the email
+    // notification below already uses. Approving always marks it reviewed;
+    // deactivating only counts as a moderation-queue rejection when it
+    // comes with a reason (matching handleApprove/handleReject in
+    // AdminDashboard.jsx) -- an admin deactivating an already-approved
+    // listing for some other reason shouldn't relabel it as "rejected".
+    if (isActive === true) update.moderationStatus = "approved";
+    else if (rejectionReason) update.moderationStatus = "rejected";
+  }
   if (title !== undefined) update.title = title.trim();
   if (subcategory !== undefined) update.subcategory = subcategory.trim();
   if (address !== undefined) update["location.address"] = address.trim();

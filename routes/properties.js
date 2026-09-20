@@ -525,6 +525,8 @@ router.post(
         video: videoUrl,
         icalUrl: icalUrl || undefined,
         listingTerms,
+        isActive: false,
+        moderationStatus: "pending_review",
       });
 
       const savedProperty = await property.save();
@@ -1583,6 +1585,19 @@ router.patch("/:id/status", auth, async (req, res) => {
       });
     }
 
+    // A host can freely toggle their own already-approved listing on/off
+    // (that's what this route is for), but can't use it to self-publish a
+    // listing that's never been approved, or one an admin rejected -- both
+    // still need to actually go through admin review first.
+    if (isActive && property.moderationStatus !== "approved") {
+      return res.status(400).json({
+        error:
+          property.moderationStatus === "rejected"
+            ? "This listing was not approved. Please update it and it will go back to the review queue."
+            : "This listing is still awaiting admin approval before it can go live.",
+      });
+    }
+
     property.isActive = isActive;
     await property.save();
 
@@ -1734,6 +1749,11 @@ router.post("/:id/duplicate", auth, async (req, res) => {
     delete duplicateData.reviews;
     duplicateData.title = `${original.title} (Copy)`;
     duplicateData.isActive = false; // start unpublished so host can review before going live
+    // toObject() above copied the original's moderationStatus too -- a
+    // duplicate is its own distinct listing that hasn't been reviewed yet,
+    // so it needs to go through approval again even if the original was
+    // already approved.
+    duplicateData.moderationStatus = "pending_review";
 
     const duplicate = new Property(duplicateData);
     const saved = await duplicate.save();
