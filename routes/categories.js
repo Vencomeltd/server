@@ -40,7 +40,16 @@ router.get("/", async (req, res) => {
 router.get("/with-counts", async (req, res) => {
   try {
     const Property = require("../models/Property");
-    const categories = await Category.find({ status: "published" }).sort({ order: 1 });
+    const categories = await Category.find({ status: "published" });
+
+    // The admin reorder feature renumbers every category together (0, 1,
+    // 2...) whenever any one of them is dragged -- there's no per-category
+    // "was this one deliberately placed" flag, only a list-wide one. So:
+    // once the admin has reordered at all (anything other than every
+    // category still sitting at the schema default of 0), respect that
+    // order as-is. Until then, rank by live listing count instead of
+    // arbitrary insertion order, so the strip actually reflects supply.
+    const hasManualOrder = categories.some((cat) => cat.order !== 0);
 
     const categoriesWithCounts = await Promise.all(
       categories.map(async (cat) => {
@@ -60,8 +69,13 @@ router.get("/with-counts", async (req, res) => {
           subcategories: cat.subcategories,
           listingCount: count,
           hasListings: count > 0,
+          order: cat.order,
         };
       })
+    );
+
+    categoriesWithCounts.sort((a, b) =>
+      hasManualOrder ? a.order - b.order : b.listingCount - a.listingCount
     );
 
     res.json(categoriesWithCounts);
