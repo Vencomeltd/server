@@ -276,12 +276,18 @@ router.get("/overview-analytics", async (req, res) => {
 
 // ─── Users ────────────────────────────────────────────────────────────────────
 router.get("/users", async (req, res) => {
-  const { page = 1, limit = 20, q, role } = req.query;
+  const { page = 1, limit = 20, q, role, excludeTest } = req.query;
   const filter = {};
   if (q) filter.$or = [{ email: { $regex: q, $options: "i" } }, { firstName: { $regex: q, $options: "i" } }];
   if (role === "host") filter.isHost = true;
   if (role === "customer") filter.isHost = { $ne: true };
   if (role === "admin") filter.isAdmin = true;
+  // Opt-in only -- the browsable Users list should still surface test
+  // accounts so admin can find/manage them, but the dashboard's summary
+  // counts (see AdminDashboard.jsx fetchUsers) ask for this explicitly so
+  // "Total Users" matches the same real-activity-only number GET /stats
+  // already computes.
+  if (excludeTest === "true") filter.isTestAccount = { $ne: true };
   const skip = (parseInt(page) - 1) * parseInt(limit);
   const [users, total] = await Promise.all([
     User.find(filter).select("-password -otp -otpExpires").sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
@@ -804,13 +810,20 @@ router.patch("/support-tickets/:id", async (req, res) => {
 
 // ─── Properties ───────────────────────────────────────────────────────────────
 router.get("/properties", async (req, res) => {
-  const { page = 1, limit = 20, q, moderationStatus } = req.query;
+  const { page = 1, limit = 20, q, moderationStatus, excludeTest } = req.query;
   const filter = {};
   if (q) filter.title = { $regex: q, $options: "i" };
   // Lets the moderation queue query platform-wide regardless of whatever
   // page the main "all listings" browser happens to be on, instead of the
   // queue being derived by filtering just the current page's 50 results.
   if (moderationStatus) filter.moderationStatus = moderationStatus;
+  // Opt-in only, same reasoning as GET /users's excludeTest -- the
+  // browsable listings table should still show test hosts' listings, but
+  // the "Total Listings" summary count asks for this explicitly.
+  if (excludeTest === "true") {
+    const testUserIds = await User.find({ isTestAccount: true }).distinct("_id");
+    filter.host = { $nin: testUserIds };
+  }
   const skip = (parseInt(page) - 1) * parseInt(limit);
   const [properties, total] = await Promise.all([
     Property.find(filter).populate("host", "firstName lastName email displayName").populate("category", "name").sort({ order: 1, createdAt: -1 }).skip(skip).limit(parseInt(limit)),
