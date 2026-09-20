@@ -28,6 +28,7 @@ const sendSMS = require("../utils/sendSMS");
 const createNotification = require("../utils/notify");
 const { client: redisClient } = require("../utils/redisClient");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const makeUserHost = require("../utils/stripeConnect");
 const router = express.Router();
 
 const signAdminToken = async (user) => {
@@ -1088,13 +1089,24 @@ router.post("/payments/:bookingId/release", async (req, res) => {
     const amountToHost = Math.round((booking.hostAmount || 0) * 100);
     if (amountToHost <= 0) return res.status(400).json({ error: "Nothing to release for this booking" });
 
-    const transfer = await stripe.transfers.create({
-      amount: amountToHost,
-      currency: "gbp",
-      destination: booking.host.stripeAccountId,
-      transfer_group: booking._id.toString(),
-      description: `Manual admin payout release for booking ${booking._id}`,
-    });
+    let transfer;
+    try {
+      transfer = await stripe.transfers.create({
+        amount: amountToHost,
+        currency: "gbp",
+        destination: booking.host.stripeAccountId,
+        transfer_group: booking._id.toString(),
+        description: `Manual admin payout release for booking ${booking._id}`,
+      });
+    } catch (err) {
+      if (makeUserHost.isStaleAccountError(err)) {
+        await makeUserHost.clearStaleStripeAccount(booking.host._id);
+        return res.status(400).json({
+          error: "This host's payout account predates a platform update and needs to reconnect via Payouts before this can be released.",
+        });
+      }
+      throw err;
+    }
 
     booking.escrowReleased = true;
     booking.stripeTransferId = transfer.id;

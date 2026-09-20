@@ -1,6 +1,24 @@
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const HostWallet = require("../models/HostWallet");
 const WalletTransaction = require("../models/WalletTransaction");
+const makeUserHost = require("./stripeConnect");
+
+// A booking whose deposit was originally charged before VenCome's Stripe
+// test->live key switch has a paymentIntentId that only exists in the old
+// test-mode environment -- there's no real charge behind it for a live-mode
+// refund to act on, so retrying this forever (like the equivalent account
+// case elsewhere) would never succeed. Re-throw with a distinct, greppable
+// message instead of the raw Stripe error so this shows up in logs as
+// "needs manual reconciliation" rather than looking like any other
+// transient refund failure.
+function rethrowIfStalePaymentIntent(err, booking) {
+  if (makeUserHost.isStaleAccountError(err)) {
+    throw new Error(
+      `STALE_TEST_MODE_PAYMENT: booking ${booking._id}'s deposit was charged before the live-mode switch (paymentIntentId ${booking.paymentIntentId}) -- cannot be refunded via the live API, needs manual reconciliation.`
+    );
+  }
+  throw err;
+}
 
 // Credits a booking's deposit into the host's wallet as "reserved" (not yet
 // withdrawable -- see models/HostWallet.js) the moment the deposit is
@@ -38,12 +56,17 @@ async function creditDepositToWallet(booking) {
 async function refundDeposit(booking) {
   if (booking.deposit?.status !== "charged") return null;
 
-  const stripeRefund = await stripe.refunds.create({
-    payment_intent: booking.paymentIntentId,
-    amount: Math.round(booking.deposit.amount * 100),
-    reason: "requested_by_customer",
-    metadata: { bookingId: booking._id.toString(), type: "deposit_refund" },
-  });
+  let stripeRefund;
+  try {
+    stripeRefund = await stripe.refunds.create({
+      payment_intent: booking.paymentIntentId,
+      amount: Math.round(booking.deposit.amount * 100),
+      reason: "requested_by_customer",
+      metadata: { bookingId: booking._id.toString(), type: "deposit_refund" },
+    });
+  } catch (err) {
+    rethrowIfStalePaymentIntent(err, booking);
+  }
 
   await HostWallet.findOneAndUpdate(
     { host: booking.host },
@@ -93,12 +116,16 @@ async function settleClaim(booking, approvedAmount, resolvedBy) {
   }
 
   if (remainder > 0) {
-    await stripe.refunds.create({
-      payment_intent: booking.paymentIntentId,
-      amount: Math.round(remainder * 100),
-      reason: "requested_by_customer",
-      metadata: { bookingId: booking._id.toString(), type: "deposit_claim_remainder_refund" },
-    });
+    try {
+      await stripe.refunds.create({
+        payment_intent: booking.paymentIntentId,
+        amount: Math.round(remainder * 100),
+        reason: "requested_by_customer",
+        metadata: { bookingId: booking._id.toString(), type: "deposit_claim_remainder_refund" },
+      });
+    } catch (err) {
+      rethrowIfStalePaymentIntent(err, booking);
+    }
     await HostWallet.findOneAndUpdate(
       { host: booking.host },
       { $inc: { reservedBalance: -remainder } }
