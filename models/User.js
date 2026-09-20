@@ -97,6 +97,12 @@ const userSchema = new mongoose.Schema(
     venComeVerifiedAt: { type: Date, default: null },
     venComeVerifiedAppliedAt: { type: Date, default: null },
     isHost: { type: Boolean, default: false },
+    // QA/throwaway accounts used for testing live flows against production
+    // data -- excluded from admin dashboard stats (routes/admin.js /stats,
+    // /overview-analytics) so test activity doesn't skew what the client
+    // sees as real platform activity. Never set from client-facing signup;
+    // admin-only, set directly in the database.
+    isTestAccount: { type: Boolean, default: false },
     // Set only when an admin creates this account directly (see
     // POST /admin/users/create-host) instead of the user signing up
     // themselves -- the audit trail the client asked this feature to have.

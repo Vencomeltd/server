@@ -166,19 +166,25 @@ router.get("/analytics/visitors", async (req, res) => {
 // ─── Dashboard stats ──────────────────────────────────────────────────────────
 router.get("/stats", async (req, res) => {
   try {
+    // QA/throwaway accounts (isTestAccount) skew every count below if left
+    // in -- exclude them and anything they host/guest so the dashboard
+    // reflects real platform activity, not testing noise.
+    const testUserIds = await User.find({ isTestAccount: true }).distinct("_id");
+    const notTestUser = { $nin: testUserIds };
+
     const [users, properties, bookings, reports, pendingVerifications, escrowPending, activeUsers, pendingListings] = await Promise.all([
-      User.countDocuments(),
-      Property.countDocuments({ isActive: true }),
-      Booking.countDocuments(),
+      User.countDocuments({ isTestAccount: { $ne: true } }),
+      Property.countDocuments({ isActive: true, host: notTestUser }),
+      Booking.countDocuments({ guest: notTestUser, host: notTestUser }),
       Report.countDocuments({ status: "open" }),
-      User.countDocuments({ "businessVerification.status": "under_review" }),
-      Booking.find({ isPaid: true, escrowReleased: false, status: "completed" }).select("hostAmount"),
+      User.countDocuments({ "businessVerification.status": "under_review", isTestAccount: { $ne: true } }),
+      Booking.find({ isPaid: true, escrowReleased: false, status: "completed", guest: notTestUser, host: notTestUser }).select("hostAmount"),
       // Platform-wide, unlike the client's old page-scoped filter (which
       // only ever looked at whatever 20 users / 50 listings happened to be
       // on the currently-fetched page, silently under-reporting once there
       // was more than one page of either).
-      User.countDocuments({ isBanned: { $ne: true } }),
-      Property.countDocuments({ isActive: false }),
+      User.countDocuments({ isBanned: { $ne: true }, isTestAccount: { $ne: true } }),
+      Property.countDocuments({ isActive: false, host: notTestUser }),
     ]);
     const totalEscrow = escrowPending.reduce((s, b) => s + b.hostAmount, 0);
     res.json({
@@ -199,6 +205,10 @@ router.get("/overview-analytics", async (req, res) => {
     const Booking = require("../models/Booking");
     const Property = require("../models/Property");
 
+    // Same test-account exclusion as GET /stats -- otherwise QA testing
+    // activity distorts the revenue/bookings chart and category breakdown.
+    const testUserIds = await User.find({ isTestAccount: true }).distinct("_id");
+
     // Revenue & bookings by month, last 12 months
     const twelveMonthsAgo = new Date();
     twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 11);
@@ -210,6 +220,8 @@ router.get("/overview-analytics", async (req, res) => {
         $match: {
           createdAt: { $gte: twelveMonthsAgo },
           status: { $in: ["confirmed", "completed"] },
+          guest: { $nin: testUserIds },
+          host: { $nin: testUserIds },
         },
       },
       {
@@ -231,6 +243,7 @@ router.get("/overview-analytics", async (req, res) => {
 
     // Listings by category
     const categoryBreakdown = await Property.aggregate([
+      { $match: { host: { $nin: testUserIds } } },
       { $group: { _id: "$category", count: { $sum: 1 } } },
       {
         $lookup: {
