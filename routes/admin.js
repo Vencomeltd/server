@@ -277,6 +277,41 @@ router.get("/users", async (req, res) => {
   res.json({ users, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
 });
 
+// Aggregated drill-down for a single user -- the admin Users tab only ever
+// showed name/email/role/status, with no way to see what a host has listed
+// or what either side has actually booked without leaving the panel.
+router.get("/users/:id/detail", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select("-password -otp -otpExpires");
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const [listings, bookingsAsGuest, bookingsAsHost] = await Promise.all([
+      user.isHost
+        ? Property.find({ host: user._id })
+            .select("title isActive images createdAt")
+            .sort({ createdAt: -1 })
+        : Promise.resolve([]),
+      Booking.find({ guest: user._id })
+        .populate("property", "title")
+        .select("property checkIn checkOut totalPrice status createdAt")
+        .sort({ createdAt: -1 })
+        .limit(20),
+      user.isHost
+        ? Booking.find({ host: user._id })
+            .populate("property", "title")
+            .select("property checkIn checkOut totalPrice status createdAt")
+            .sort({ createdAt: -1 })
+            .limit(20)
+        : Promise.resolve([]),
+    ]);
+
+    res.json({ user, listings, bookingsAsGuest, bookingsAsHost });
+  } catch (err) {
+    console.error("Admin user detail error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 router.patch("/users/:id/ban", async (req, res) => {
   const user = await User.findByIdAndUpdate(req.params.id, { isBanned: req.body.ban ?? true }, { new: true }).select("-password");
   if (!user) return res.status(404).json({ error: "User not found" });
