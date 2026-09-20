@@ -552,13 +552,14 @@ router.post(
         const categoryDoc = category ? await Category.findById(category).select("name").lean() : null;
         const categoryName = categoryDoc?.name || "Uncategorized";
         const adminEmails = ["vencomeltd@gmail.com", "bashayr.alharthi@outlook.com"];
+        const reviewUrl = `https://www.vencome.com/admin?section=listings&review=${savedProperty._id}`;
         sendEmail({
           to: adminEmails,
-          subject: `New Listing Awaiting Review - ${title}`,
+          subject: `Space Listed — Please Review - ${title}`,
           html: `
             <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
               <img src=" https://vencome.com/VenCome.jpg " alt="VenCome" style="height:40px;margin-bottom:24px;" />
-              <h2 style="color:#0A1628;">New Listing Awaiting Review 🏢</h2>
+              <h2 style="color:#0A1628;">Space Listed — Please Review 🏢</h2>
               <p>A new commercial space has been submitted and needs your approval before it goes live.</p>
               <table style="width:100%;border-collapse:collapse;margin:16px 0;">
                 <tr><td style="padding:8px 0;color:#666;">Listing</td><td style="padding:8px 0;font-weight:700;">${title}</td></tr>
@@ -567,7 +568,7 @@ router.post(
                 <tr><td style="padding:8px 0;color:#666;">Location</td><td style="padding:8px 0;font-weight:700;">${location?.city || ""}, ${location?.country || ""}</td></tr>
                 <tr><td style="padding:8px 0;color:#666;">Time</td><td style="padding:8px 0;font-weight:700;">${new Date().toLocaleString("en-GB")}</td></tr>
               </table>
-              <a href=" https://www.vencome.com/admin " style="display:inline-block;padding:12px 24px;background:#305CDE;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;">Review in Admin</a>
+              <a href="${reviewUrl}" style="display:inline-block;padding:12px 24px;background:#305CDE;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;">Review This Space</a>
             </div>
           `,
         }).catch((err) => console.error("Listing notification error:", err.message));
