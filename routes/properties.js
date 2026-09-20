@@ -525,8 +525,8 @@ router.post(
         video: videoUrl,
         icalUrl: icalUrl || undefined,
         listingTerms,
-        isActive: false,
-        moderationStatus: "pending_review",
+        isActive: true,
+        moderationStatus: "approved",
       });
 
       const savedProperty = await property.save();
@@ -555,12 +555,12 @@ router.post(
         const reviewUrl = `https://www.vencome.com/admin?section=listings&review=${savedProperty._id}`;
         sendEmail({
           to: adminEmails,
-          subject: `Space Listed — Please Review - ${title}`,
+          subject: `New Space Listed - ${title}`,
           html: `
             <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
               <img src=" https://vencome.com/VenCome.jpg " alt="VenCome" style="height:40px;margin-bottom:24px;" />
-              <h2 style="color:#0A1628;">Space Listed — Please Review 🏢</h2>
-              <p>A new commercial space has been submitted and needs your approval before it goes live.</p>
+              <h2 style="color:#0A1628;">New Space Listed 🏢</h2>
+              <p>A new commercial space just went live on VenCome. It's already visible to tenants — this is just for your awareness in case anything about it looks off and needs to be flagged.</p>
               <table style="width:100%;border-collapse:collapse;margin:16px 0;">
                 <tr><td style="padding:8px 0;color:#666;">Listing</td><td style="padding:8px 0;font-weight:700;">${title}</td></tr>
                 <tr><td style="padding:8px 0;color:#666;">Host</td><td style="padding:8px 0;font-weight:700;">${hostName} (${host?.email || ""})</td></tr>
@@ -568,7 +568,7 @@ router.post(
                 <tr><td style="padding:8px 0;color:#666;">Location</td><td style="padding:8px 0;font-weight:700;">${location?.city || ""}, ${location?.country || ""}</td></tr>
                 <tr><td style="padding:8px 0;color:#666;">Time</td><td style="padding:8px 0;font-weight:700;">${new Date().toLocaleString("en-GB")}</td></tr>
               </table>
-              <a href="${reviewUrl}" style="display:inline-block;padding:12px 24px;background:#305CDE;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;">Review This Space</a>
+              <a href="${reviewUrl}" style="display:inline-block;padding:12px 24px;background:#305CDE;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;">View This Space</a>
             </div>
           `,
         }).catch((err) => console.error("Listing notification error:", err.message));
@@ -1758,11 +1758,13 @@ router.post("/:id/duplicate", auth, async (req, res) => {
     delete duplicateData.reviews;
     duplicateData.title = `${original.title} (Copy)`;
     duplicateData.isActive = false; // start unpublished so host can review before going live
-    // toObject() above copied the original's moderationStatus too -- a
-    // duplicate is its own distinct listing that hasn't been reviewed yet,
-    // so it needs to go through approval again even if the original was
-    // already approved.
-    duplicateData.moderationStatus = "pending_review";
+    // toObject() above copied the original's moderationStatus too -- if the
+    // original had been flagged/rejected, that status shouldn't carry over
+    // to a fresh duplicate the host hasn't touched yet. Duplicates don't go
+    // through admin approval (nothing does, by default) -- they just start
+    // unpublished so the host can review their own copy before switching it
+    // on with the normal publish toggle.
+    duplicateData.moderationStatus = "approved";
 
     const duplicate = new Property(duplicateData);
     const saved = await duplicate.save();
