@@ -554,12 +554,12 @@ router.post(
         const adminEmails = ["vencomeltd@gmail.com", "bashayr.alharthi@outlook.com"];
         sendEmail({
           to: adminEmails,
-          subject: `New Listing Published - ${title}`,
+          subject: `New Listing Awaiting Review - ${title}`,
           html: `
             <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
               <img src=" https://vencome.com/VenCome.jpg " alt="VenCome" style="height:40px;margin-bottom:24px;" />
-              <h2 style="color:#0A1628;">New Listing Created 🏢</h2>
-              <p>A new commercial space has just been listed on VenCome.</p>
+              <h2 style="color:#0A1628;">New Listing Awaiting Review 🏢</h2>
+              <p>A new commercial space has been submitted and needs your approval before it goes live.</p>
               <table style="width:100%;border-collapse:collapse;margin:16px 0;">
                 <tr><td style="padding:8px 0;color:#666;">Listing</td><td style="padding:8px 0;font-weight:700;">${title}</td></tr>
                 <tr><td style="padding:8px 0;color:#666;">Host</td><td style="padding:8px 0;font-weight:700;">${hostName} (${host?.email || ""})</td></tr>
@@ -567,8 +567,7 @@ router.post(
                 <tr><td style="padding:8px 0;color:#666;">Location</td><td style="padding:8px 0;font-weight:700;">${location?.city || ""}, ${location?.country || ""}</td></tr>
                 <tr><td style="padding:8px 0;color:#666;">Time</td><td style="padding:8px 0;font-weight:700;">${new Date().toLocaleString("en-GB")}</td></tr>
               </table>
-              <a href=" https://www.vencome.com/admin " style="display:inline-block;padding:12px 24px;background:#305CDE;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;margin-right:12px;">View in Admin</a>
-              <a href=" https://www.vencome.com/property/${savedProperty.slug || savedProperty._id} " style="display:inline-block;padding:12px 24px;background:#0A1628;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;">View Listing</a>
+              <a href=" https://www.vencome.com/admin " style="display:inline-block;padding:12px 24px;background:#305CDE;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;">Review in Admin</a>
             </div>
           `,
         }).catch((err) => console.error("Listing notification error:", err.message));
@@ -1320,7 +1319,8 @@ router.put(
       return res.status(404).json({ error: "Property not found" });
     }
 
-    if (property.host.toString() !== req.user.id) {
+    const isOwnListing = property.host.toString() === req.user.id;
+    if (!isOwnListing) {
       // Not the listing's own host -- still allow if the requester is an
       // admin, so the same EditSpace.jsx page hosts use also works as
       // admin's full listing editor (reused rather than duplicated).
@@ -1335,6 +1335,14 @@ router.put(
           error: "Unauthorized: You are not the host of this property",
         });
       }
+    }
+
+    // A host editing their own rejected listing is trying to fix it, which
+    // should send it back to the review queue -- but an admin using this
+    // same shared editor on someone's listing shouldn't re-flag it for
+    // their own future review, so this only applies to the host themselves.
+    if (isOwnListing && property.moderationStatus === "rejected") {
+      property.moderationStatus = "pending_review";
     }
 
     // Backfill for listings created before slugs existed -- the slug itself
