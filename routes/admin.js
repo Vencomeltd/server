@@ -22,6 +22,7 @@ const PlatformSettings = require("../models/PlatformSettings");
 const { generateOTP, storeOTP, verifyOTP } = require("../utils/otp");
 const SupportAccessLog = require("../models/SupportAccessLog");
 const SupportAccessRequest = require("../models/SupportAccessRequest");
+const EmailLog = require("../models/EmailLog");
 const { generateInvoicePDF } = require("../utils/generateInvoice");
 const sendEmail = require("../utils/sendEmail");
 const sendSMS = require("../utils/sendSMS");
@@ -124,7 +125,7 @@ router.use(adminAuth);
 // Tiered access on top of adminAuth — full_admin always passes every gate.
 // /stats and /overview-analytics are intentionally left ungated (every tier
 // sees the dashboard home). Team management stays full_admin-only below.
-router.use(["/users", "/verifications", "/reports", "/properties", "/bookings", "/support-tickets", "/drafts", "/prospect-emails"], requireAdminRole("support"));
+router.use(["/users", "/verifications", "/reports", "/properties", "/bookings", "/support-tickets", "/drafts", "/prospect-emails", "/emails"], requireAdminRole("support"));
 router.use(["/payments", "/payouts", "/invoices", "/commission"], requireAdminRole("finance"));
 router.use(["/markets", "/categories", "/broadcast"], requireAdminRole("content"));
 router.use(["/team", "/settings"], requireAdminRole());
@@ -855,6 +856,42 @@ router.delete("/drafts/:id", async (req, res) => {
   const draft = await Draft.findByIdAndDelete(req.params.id);
   if (!draft) return res.status(404).json({ error: "Draft not found" });
   res.json({ success: true });
+});
+
+// GET /emails — the Communications tab: every email the platform has sent
+// since this feature was added, newest first. "search" matches the
+// recipient address or, if it resolves to a platform user, their name too.
+router.get("/emails", async (req, res) => {
+  const { search, status, page = 1, limit = 25 } = req.query;
+  const filter = {};
+  if (status) filter.status = status;
+
+  if (search) {
+    const matchingUsers = await User.find({
+      $or: [
+        { firstName: { $regex: search, $options: "i" } },
+        { lastName: { $regex: search, $options: "i" } },
+        { displayName: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
+      ],
+    }).select("_id");
+    filter.$or = [
+      { to: { $regex: search, $options: "i" } },
+      { subject: { $regex: search, $options: "i" } },
+      { toUser: { $in: matchingUsers.map((u) => u._id) } },
+    ];
+  }
+
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+  const [emails, total] = await Promise.all([
+    EmailLog.find(filter)
+      .populate("toUser", "firstName lastName displayName email isHost")
+      .sort({ sentAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit)),
+    EmailLog.countDocuments(filter),
+  ]);
+  res.json({ emails, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
 });
 
 // Prospect emails left on ServiceLocationPage.jsx's "coming soon" state,

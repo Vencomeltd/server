@@ -66,6 +66,29 @@ const dotenv = require("dotenv");
 dotenv.config({ path: "./config.env" });
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+// Best-effort write to the Communications-tab log. Never allowed to break
+// the actual send — required lazily so this file has no load-order
+// dependency on the Mongoose connection being open yet.
+const logEmail = async ({ to, subject, text, html, status, errorMessage }) => {
+  try {
+    const EmailLog = require("../models/EmailLog");
+    const User = require("../models/User");
+    const toUser = await User.findOne({ email: to }).select("_id");
+    await EmailLog.create({
+      to,
+      toUser: toUser?._id || null,
+      subject,
+      text,
+      html,
+      status,
+      errorMessage: errorMessage || "",
+    });
+  } catch (logErr) {
+    console.error("EmailLog write failed:", logErr.message);
+  }
+};
+
 const sendEmail = async ({ to, subject, text, html, attachments = [] }) => {
   try {
     const msg = {
@@ -89,8 +112,10 @@ const sendEmail = async ({ to, subject, text, html, attachments = [] }) => {
     }
 
     await sgMail.send(msg);
+    logEmail({ to, subject, text, html, status: "sent" });
   } catch (err) {
     console.error("Error sending email:", err.response?.body || err.message);
+    logEmail({ to, subject, text, html, status: "failed", errorMessage: err.message });
     throw err; // bubble up errors (important for APIs)
   }
 };

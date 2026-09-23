@@ -222,7 +222,7 @@ cron.schedule("0 * * * *", async () => {
   }
 });
 
-// Remind hosts with an incomplete draft listing every 24h until they finish
+// Remind hosts with an incomplete draft listing once a week until they finish
 // it. Runs hourly and checks each draft's own clock (createdAt, then
 // lastReminderSentAt) rather than firing on a single fixed time of day,
 // since drafts are abandoned at all hours.
@@ -230,7 +230,7 @@ cron.schedule("0 * * * *", async () => {
   try {
     const Draft = require("./models/Draft");
     const sendEmail = require("./utils/sendEmail");
-    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const dueDrafts = await Draft.find({
       $or: [
         { lastReminderSentAt: null, createdAt: { $lte: cutoff } },
