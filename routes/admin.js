@@ -967,6 +967,7 @@ router.patch("/properties/reorder", async (req, res) => {
 // and subcategory, which power the /:subcategorySlug/:locationSlug SEO
 // pages and are otherwise only ever set by the host themselves.
 router.patch("/properties/:id", async (req, res) => {
+ try {
   const {
     isActive, rejectionReason, title, subcategory, address, city, country, neighborhood,
     description, whatsIncluded, capacity, unitsCount, pricing, discounts, availability,
@@ -1041,6 +1042,10 @@ router.patch("/properties/:id", async (req, res) => {
   }
 
   res.json(property);
+ } catch (err) {
+  console.error("Admin update listing error:", err.message);
+  res.status(400).json({ error: err.message || "Failed to save listing" });
+ }
 });
 
 // ─── Payouts (escrow) ─────────────────────────────────────────────────────────

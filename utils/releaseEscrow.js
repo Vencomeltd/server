@@ -6,6 +6,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const User = require("../models/User");
 const sendSMS = require("./sendSMS");
 const makeUserHost = require("./stripeConnect");
+const { PAYMENTS_CONFIG } = require("../config/payments");
 
 module.exports = function setupEscrowRelease() {
   cron.schedule("0 * * * *", async () => {
@@ -17,7 +18,7 @@ module.exports = function setupEscrowRelease() {
         isPaid: true,
         escrowReleased: false,
         disputeFrozen: { $ne: true },
-        checkOut: { $lt: new Date(now.getTime() - 24 * 60 * 60 * 1000) },
+        checkOut: { $lt: new Date(now.getTime() - PAYMENTS_CONFIG.escrowReleaseHours * 60 * 60 * 1000) },
       }).populate("host");
 
       for (const booking of readyBookings) {
@@ -39,7 +40,7 @@ module.exports = function setupEscrowRelease() {
             currency: "gbp",
             destination: host.stripeAccountId,
             transfer_group: booking._id.toString(),
-            description: `Payout for booking ${booking._id} after 24hr escrow`,
+            description: `Payout for booking ${booking._id} after ${PAYMENTS_CONFIG.escrowReleaseHours}hr escrow`,
           });
 
           booking.escrowReleased = true;

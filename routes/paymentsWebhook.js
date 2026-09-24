@@ -8,6 +8,7 @@ const sendEmail = require("../utils/sendEmail");
 const googleCalendar = require("../utils/googleCalendar");
 const outlookCalendar = require("../utils/outlookCalendar");
 const { creditDepositToWallet } = require("../utils/wallet");
+const { PAYMENTS_CONFIG } = require("../config/payments");
 const { sendBookingCreatedNotifications } = require("../utils/bookingNotifications");
 
 router.post("/", express.raw({ type: "application/json" }), async (req, res) => {
@@ -50,7 +51,7 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
       if (captured) {
         booking.isPaid = true;
         const releaseDate = new Date(booking.checkOut);
-        releaseDate.setHours(releaseDate.getHours() + 24);
+        releaseDate.setHours(releaseDate.getHours() + PAYMENTS_CONFIG.escrowReleaseHours);
         booking.escrowReleaseDate = releaseDate;
         await creditDepositToWallet(booking);
         await booking.save();

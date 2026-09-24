@@ -15,8 +15,8 @@ async function markCompletedBookings() {
   for (const booking of bookings) {
     // status must reach "completed" for utils/releaseEscrow.js's hourly
     // cron to ever find this booking -- it independently enforces its own
-    // 24h-post-checkout buffer, so this job only needs to react to
-    // checkout having passed, not wait an extra 24h itself.
+    // post-checkout buffer (PAYMENTS_CONFIG.escrowReleaseHours), so this job
+    // only needs to react to checkout having passed, not wait itself.
     booking.completed = true;
     booking.status = "completed";
     await booking.save();

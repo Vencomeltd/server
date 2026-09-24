@@ -31,7 +31,7 @@ const paymentSchema = new mongoose.Schema(
       default: "pending",
     },
 
-    escrowReleaseAt: { type: Date }, // booking end + 24h
+    escrowReleaseAt: { type: Date }, // booking end + PAYMENTS_CONFIG.escrowReleaseHours
   },
   { timestamps: true }
 );

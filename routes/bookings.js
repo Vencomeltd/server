@@ -20,6 +20,7 @@ const {
   resolveDayHours,
 } = require("../utils/pricing");
 const { resolveCommissionRate } = require("../utils/commission");
+const { PAYMENTS_CONFIG } = require("../config/payments");
 const { creditDepositToWallet, refundDeposit } = require("../utils/wallet");
 const googleCalendar = require("../utils/googleCalendar");
 const outlookCalendar = require("../utils/outlookCalendar");
@@ -707,7 +708,7 @@ async function applyBookingDecision(booking, status, io) {
 
     booking.isPaid = true;
     const releaseDate = new Date(booking.checkOut);
-    releaseDate.setHours(releaseDate.getHours() + 24);
+    releaseDate.setHours(releaseDate.getHours() + PAYMENTS_CONFIG.escrowReleaseHours);
     booking.escrowReleaseDate = releaseDate;
     await creditDepositToWallet(booking);
 
