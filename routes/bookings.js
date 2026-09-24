@@ -643,7 +643,18 @@ router.get("/:id", auth, async (req, res) => {
       return res.status(404).json({ message: "Booking not found" });
     }
 
-    res.json(booking);
+    // Only the booking's guest, its host, or an admin may read it.
+    const isParticipant = [booking.guest, booking.host].some((id) => id?.toString() === req.user.id);
+    if (!isParticipant) {
+      const requester = await User.findById(req.user.id).select("isAdmin");
+      if (!requester?.isAdmin) {
+        return res.status(403).json({ error: "Not authorised to view this booking" });
+      }
+    }
+
+    // The one-click approve/decline token only ever travels by email.
+    const { hostActionToken, hostActionTokenExpires, ...safeBooking } = booking.toObject();
+    res.json(safeBooking);
   } catch (err) {
     console.error("Fetch booking error:", err);
     res.status(500).json({ message: "Server error" });
