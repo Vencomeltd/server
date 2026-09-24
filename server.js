@@ -34,6 +34,8 @@ const setupEscrowRelease = require("./utils/releaseEscrow");
 const setupDepositAutoRelease = require("./utils/depositAutoRelease");
 const setupWalletBalanceRelease = require("./utils/releaseWalletBalance");
 const setupPaymentsScheduler = require("./utils/paymentsV2/scheduler");
+const migrateLegacyDeposits = require("./utils/paymentsV2/migrateLegacyDeposits");
+const { isPaymentsV2Enabled } = require("./config/payments");
 const setupScheduledBroadcasts = require("./utils/sendScheduledBroadcasts");
 const setupBookingExpiry = require("./utils/expirePendingBookings");
 const setupGoogleCalendarSync = require("./utils/syncGoogleCalendars");
@@ -304,7 +306,13 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 // Connect to MongoDB
 mongoose
   .connect(process.env.DATABASE)
-  .then(() => console.log("MongoDB connected"))
+  .then(() => {
+    console.log("MongoDB connected");
+    // Payments v2: convert legacy deposits to card holds once, at start-up.
+    if (isPaymentsV2Enabled()) {
+      migrateLegacyDeposits().catch((err) => console.error("[Payments v2] Legacy deposit migration failed:", err.message));
+    }
+  })
   .catch((err) => console.error(err));
 
 // Blocks everything except admin + auth routes when Maintenance Mode is on

@@ -1,8 +1,8 @@
 // Payments v2 scheduler (spec Phase 3.4 + Phase 6). Runs every few minutes and
 // is idempotent and restart-safe: every step selects bookings by their stored
 // state, and every Stripe write carries an idempotency key, so a repeated or
-// overlapping run can't double-place a hold or double-pay a host. Does nothing
-// unless PAYMENTS_V2=true.
+// overlapping run can't double-place a hold or double-pay a host. It only acts
+// on bookings made under payments v2, so it is a no-op if v2 was never used.
 const cron = require("node-cron");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const Booking = require("../../models/Booking");
@@ -10,7 +10,7 @@ const Payment = require("../../models/Payment");
 const Payout = require("../../models/Payout");
 const User = require("../../models/User");
 const makeUserHost = require("../stripeConnect");
-const { PAYMENTS_CONFIG, isPaymentsV2Enabled } = require("../../config/payments");
+const { PAYMENTS_CONFIG } = require("../../config/payments");
 const { HOUR_MS } = require("./amounts");
 const { placeDeposit, releaseHold, captureHold, refundChargedDeposit } = require("./depositHold");
 const notify = require("./notify");
@@ -183,8 +183,10 @@ async function runPaymentsSchedulerOnce() {
 }
 
 function setupPaymentsScheduler() {
+  // Deliberately not gated on PAYMENTS_V2: it only ever finds bookings made
+  // under v2, so it's a no-op while v2 has never been on, and switching v2 off
+  // later (a rollback) must not strand holds or host payouts already in flight.
   cron.schedule(`*/${PAYMENTS_CONFIG.schedulerIntervalMinutes} * * * *`, async () => {
-    if (!isPaymentsV2Enabled()) return;
     await runPaymentsSchedulerOnce();
   });
 }
