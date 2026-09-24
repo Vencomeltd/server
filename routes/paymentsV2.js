@@ -97,7 +97,12 @@ router.post("/:bookingId/payment-intent", auth, [bookingIdParam], validate, asyn
         transfer_group: `booking_${booking._id}`,
         description: `Booking ${booking._id} — ${booking.property?.title || "VenCome space"}`,
         metadata: { bookingId: booking._id.toString(), type: "booking" },
-        automatic_payment_methods: { enabled: true, allow_redirects: "never" },
+        // A deposit hold can only be placed on a card (Apple/Google Pay are cards
+        // too), so listings with a deposit accept cards only; otherwise Stripe
+        // picks the methods, minus anything that redirects away from checkout.
+        ...(saveCard
+          ? { payment_method_types: ["card"] }
+          : { automatic_payment_methods: { enabled: true, allow_redirects: "never" } }),
       },
       { idempotencyKey: `booking-pi:${booking._id}:v1` }
     );
