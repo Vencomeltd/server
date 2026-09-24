@@ -110,6 +110,13 @@ function normaliseDepositPolicy(raw) {
   };
 }
 
+// After a partial-refund cancellation the host keeps the non-refunded share of
+// their amount (e.g. a 75% refund leaves the host 25% of their share).
+function retainedHostSharePence(hostAmountPence, refundPercent) {
+  const refunded = Math.round((hostAmountPence * refundPercent) / 100);
+  return Math.max(0, hostAmountPence - refunded);
+}
+
 // Refund tier for a cancellation, read from config (never hardcoded).
 function getRefundTier(hoursUntilCheckIn, config = PAYMENTS_CONFIG) {
   return config.cancellationTiers.find((t) => (t.exclusive ? hoursUntilCheckIn > t.minHours : hoursUntilCheckIn >= t.minHours));
@@ -123,5 +130,6 @@ module.exports = {
   holdWindowHours,
   planDeposit,
   normaliseDepositPolicy,
+  retainedHostSharePence,
   getRefundTier,
 };

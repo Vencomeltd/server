@@ -9,6 +9,7 @@ const {
   holdWindowHours,
   planDeposit,
   normaliseDepositPolicy,
+  retainedHostSharePence,
   getRefundTier,
 } = require("../utils/paymentsV2/amounts");
 
@@ -105,6 +106,14 @@ test("cancellation tiers come from config: >48h 100%, 24-48h 75%, <24h 50%", () 
   assert.equal(getRefundTier(24).refundPercent, 75);
   assert.equal(getRefundTier(23.9).refundPercent, 50);
   assert.equal(getRefundTier(-5).refundPercent, 50);
+});
+
+test("cancellation: host keeps the non-refunded share of their amount", () => {
+  assert.equal(retainedHostSharePence(9000, 75), 2250); // 75% refunded -> host keeps 25%
+  assert.equal(retainedHostSharePence(9000, 50), 4500);
+  assert.equal(retainedHostSharePence(9000, 100), 0);
+  assert.equal(retainedHostSharePence(9000, 0), 9000);
+  assert.equal(retainedHostSharePence(90, 75), 22); // rounds the refund, never goes negative
 });
 
 test("normaliseDepositPolicy cleans request input", () => {

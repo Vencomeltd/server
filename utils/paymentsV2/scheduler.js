@@ -11,7 +11,7 @@ const Payout = require("../../models/Payout");
 const User = require("../../models/User");
 const makeUserHost = require("../stripeConnect");
 const { PAYMENTS_CONFIG } = require("../../config/payments");
-const { HOUR_MS } = require("./amounts");
+const { HOUR_MS, retainedHostSharePence } = require("./amounts");
 const { placeDeposit, releaseHold, captureHold, refundChargedDeposit } = require("./depositHold");
 const notify = require("./notify");
 
@@ -157,6 +157,70 @@ async function payHosts(now) {
   });
 }
 
+// 6. A booking cancelled with a partial refund (e.g. 75% back to the guest):
+// the host keeps the non-refunded share. Paid on the same schedule as a normal
+// payout. Cancelled bookings are skipped by payHosts, and a payout that had
+// already been sent was proportionally reversed at cancellation, so this only
+// covers bookings that were never paid out.
+async function payRetainedCancellationShares(now) {
+  const cutoff = new Date(now.getTime() - PAYMENTS_CONFIG.escrowReleaseHours * HOUR_MS);
+  const ready = await Booking.find({
+    status: "cancelled",
+    "payment.status": "partially_refunded",
+    "payment.transferId": { $exists: false },
+    escrowReleased: { $ne: true },
+    disputeFrozen: { $ne: true },
+    checkOut: { $lte: cutoff },
+  });
+
+  await eachSafely("Cancellation payout", ready, async (b) => {
+    const p = b.payment;
+    const retainedPence = retainedHostSharePence(p.hostAmountPence || 0, b.refund?.percent || 0);
+    if (retainedPence <= 0) return;
+
+    const host = await User.findById(b.host).select("stripeAccountId");
+    if (!host?.stripeAccountId) {
+      console.warn(`[Payments Scheduler] Host ${b.host} has no Stripe account -- skipping booking ${b._id}`);
+      return;
+    }
+
+    const transfer = await stripe.transfers.create(
+      {
+        amount: retainedPence,
+        currency: PAYMENTS_CONFIG.currency,
+        destination: host.stripeAccountId,
+        source_transaction: p.chargeId,
+        transfer_group: p.transferGroup || `booking_${b._id}`,
+        metadata: { bookingId: b._id.toString(), type: "host_payout_cancellation" },
+      },
+      { idempotencyKey: `host-payout:${b._id}:v1` }
+    );
+
+    p.transferId = transfer.id;
+    p.transferredAt = new Date();
+    b.escrowReleased = true;
+    b.stripeTransferId = transfer.id;
+    await b.save();
+
+    const payment = await Payment.findOne({ booking: b._id });
+    if (payment) {
+      await Payout.create({
+        host: b.host,
+        booking: b._id,
+        payment: payment._id,
+        amount: retainedPence / 100,
+        platformFee: ((p.commissionPence || 0) - Math.round(((p.commissionPence || 0) * (b.refund?.percent || 0)) / 100)) / 100,
+        totalReceived: b.totalPrice,
+        stripeTransferId: transfer.id,
+        payoutMethod: "bank_account",
+        status: "paid",
+        releasedAt: new Date(),
+      });
+    }
+    await notify.payoutSent(b, retainedPence);
+  });
+}
+
 let running = false;
 
 async function runPaymentsSchedulerOnce() {
@@ -170,6 +234,7 @@ async function runPaymentsSchedulerOnce() {
       ["release deposits", releaseUnclaimedDeposits],
       ["protect holds", protectExpiringHolds],
       ["host payouts", payHosts],
+      ["cancellation payouts", payRetainedCancellationShares],
     ]) {
       try {
         await step(now);

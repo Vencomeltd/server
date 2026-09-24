@@ -45,8 +45,10 @@ async function getOrCreateCustomer(user) {
     },
     options
   );
+  // updateOne rather than user.save(): a full save re-validates the whole user
+  // document and could fail on older accounts unrelated to payments.
+  await User.updateOne({ _id: user._id }, { stripeCustomerId: customer.id });
   user.stripeCustomerId = customer.id;
-  await user.save();
   return customer.id;
 }
 
