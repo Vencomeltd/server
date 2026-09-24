@@ -37,6 +37,24 @@ router.get("/", [query("status").optional().isIn(["open", "approved", "rejected"
   }
 });
 
+// POST /_test/run-scheduler -- { asOf?: ISO date } runs the payments scheduler
+// once as if it were that time. TEST KEYS ONLY: it refuses on a live Stripe key,
+// so it can never move real money early.
+router.post("/_test/run-scheduler", [body("asOf").optional().isISO8601().withMessage("asOf must be an ISO date")], validate, async (req, res) => {
+  if (!(process.env.STRIPE_SECRET_KEY || "").startsWith("sk_test_")) {
+    return res.status(403).json({ error: "Only available when the server is on Stripe test keys." });
+  }
+  try {
+    const { runPaymentsSchedulerOnce } = require("../utils/paymentsV2/scheduler");
+    const asOf = req.body.asOf ? new Date(req.body.asOf) : new Date();
+    await runPaymentsSchedulerOnce(asOf);
+    res.json({ ran: true, asOf: asOf.toISOString() });
+  } catch (err) {
+    console.error("Test scheduler run error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /:bookingId/resolve -- { decision: "approve" | "reject", approvedAmountPence? }
 router.post(
   "/:bookingId/resolve",

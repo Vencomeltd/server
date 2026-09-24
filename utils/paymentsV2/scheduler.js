@@ -223,11 +223,13 @@ async function payRetainedCancellationShares(now) {
 
 let running = false;
 
-async function runPaymentsSchedulerOnce() {
+// `nowOverride` is only ever passed by the test-mode-only admin endpoint
+// (routes/adminClaims.js) so timed steps can be exercised without waiting.
+async function runPaymentsSchedulerOnce(nowOverride) {
   if (running) return;
   running = true;
   try {
-    const now = new Date();
+    const now = nowOverride || new Date();
     for (const [label, step] of [
       ["place holds", placeDueHolds],
       ["card fixes", expireCardFixes],

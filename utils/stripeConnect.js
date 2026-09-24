@@ -42,6 +42,10 @@ async function makeUserHost(userId) {
 // creates a fresh, correctly live-mode account instead of retrying the same
 // broken reference on a loop.
 function isStaleAccountError(err) {
+  // While the server runs on TEST keys, every live-mode host account "fails"
+  // this check -- that is not a stale account, and clearing them would
+  // disconnect real hosts' payouts. Only treat it as stale on live keys.
+  if ((process.env.STRIPE_SECRET_KEY || "").startsWith("sk_test_")) return false;
   return /test mode|live mode/i.test(err?.message || "");
 }
 
