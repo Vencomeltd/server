@@ -9,6 +9,8 @@ const googleCalendar = require("../utils/googleCalendar");
 const outlookCalendar = require("../utils/outlookCalendar");
 const { creditDepositToWallet } = require("../utils/wallet");
 const { PAYMENTS_CONFIG } = require("../config/payments");
+const StripeEvent = require("../models/StripeEvent");
+const { handleEvent: handleV2Event } = require("../utils/paymentsV2/bookingPayment");
 const { sendBookingCreatedNotifications } = require("../utils/bookingNotifications");
 
 router.post("/", express.raw({ type: "application/json" }), async (req, res) => {
@@ -23,6 +25,17 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
   }
 
   try {
+    // Payments v2 (PaymentIntent flow) events. De-duplicated by Stripe event
+    // id, recorded only after a successful run so a failed attempt is retried.
+    // Events that aren't v2's fall straight through to the legacy handlers.
+    if (await StripeEvent.exists({ eventId: event.id })) return res.json({ received: true, duplicate: true });
+    if (await handleV2Event(event, req.app.get("io"))) {
+      await StripeEvent.create({ eventId: event.id, type: event.type }).catch((err) => {
+        if (err.code !== 11000) throw err;
+      });
+      return res.json({ received: true });
+    }
+
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
       const bookingId = session.metadata?.bookingId;

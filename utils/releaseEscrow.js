@@ -18,6 +18,9 @@ module.exports = function setupEscrowRelease() {
         isPaid: true,
         escrowReleased: false,
         disputeFrozen: { $ne: true },
+        // Payments v2 bookings are paid out by utils/paymentsV2/scheduler.js
+        // (with source_transaction + idempotency) -- never twice.
+        "payment.chargeId": { $exists: false },
         checkOut: { $lt: new Date(now.getTime() - PAYMENTS_CONFIG.escrowReleaseHours * 60 * 60 * 1000) },
       }).populate("host");
 

@@ -20,7 +20,10 @@ const {
   resolveDayHours,
 } = require("../utils/pricing");
 const { resolveCommissionRate } = require("../utils/commission");
-const { PAYMENTS_CONFIG } = require("../config/payments");
+const { PAYMENTS_CONFIG, isPaymentsV2Enabled } = require("../config/payments");
+const { getRefundTier } = require("../utils/paymentsV2/amounts");
+const { refundBookingPayment } = require("../utils/paymentsV2/cancel");
+const { cancelDeposit: cancelV2Deposit } = require("../utils/paymentsV2/depositHold");
 const { creditDepositToWallet, refundDeposit } = require("../utils/wallet");
 const googleCalendar = require("../utils/googleCalendar");
 const outlookCalendar = require("../utils/outlookCalendar");
@@ -496,7 +499,9 @@ router.post(
         // it must never factor into commission or the rent escrow-release
         // transfer, only into the host's wallet (see HostWallet).
         deposit: {
-          amount: property.deposit?.enabled ? property.deposit.amount : 0,
+          // Legacy deposit is off while payments v2 is on -- v2 handles the
+          // deposit itself (card hold / charged), never inside the rent charge.
+          amount: !isPaymentsV2Enabled() && property.deposit?.enabled ? property.deposit.amount : 0,
           status: "none",
         },
         discountApplied: Math.round(discount * 100) / 100,
@@ -1064,22 +1069,9 @@ function getRefundPolicy(policy, checkIn) {
   const checkInDate = new Date(checkIn);
   const hoursUntilCheckIn = (checkInDate - now) / (1000 * 60 * 60);
 
-  if (hoursUntilCheckIn > 48) {
-    return {
-      refundPercent: 100,
-      reason: "Cancelled more than 48 hours before check-in — full refund",
-    };
-  }
-  if (hoursUntilCheckIn >= 24) {
-    return {
-      refundPercent: 75,
-      reason: "Cancelled 24-48 hours before check-in — 75% refund",
-    };
-  }
-  return {
-    refundPercent: 50,
-    reason: "Cancelled within 24 hours of check-in — 50% refund",
-  };
+  // Tiers live in config/payments.js (cancellationTiers), not here.
+  const { refundPercent, reason } = getRefundTier(hoursUntilCheckIn);
+  return { refundPercent, reason };
 }
 
 // ─── Cancel booking ───────────────────────────────────────────────────────────
@@ -1149,7 +1141,20 @@ router.delete("/:id/cancel", auth, async (req, res) => {
       refundReason = "Host-initiated cancellation — full refund issued";
     }
 
-    if (
+    if (booking.payment?.chargeId) {
+      // Payments v2 booking: integer-pence refund, host share reversed if paid out.
+      try {
+        const v2Refund = await refundBookingPayment(booking, refundPercent, "cancel");
+        stripeRefund = v2Refund.stripeRefund;
+        refundAmount = v2Refund.refundPence;
+      } catch (stripeErr) {
+        console.error("Stripe refund failed:", stripeErr.message);
+        return res.status(502).json({
+          error: "Cancellation recorded but Stripe refund failed",
+          detail: stripeErr.message,
+        });
+      }
+    } else if (
       booking.paymentIntentId &&
       booking.totalPrice > 0 &&
       refundPercent > 0
@@ -1187,6 +1192,13 @@ router.delete("/:id/cancel", auth, async (req, res) => {
       await refundDeposit(booking);
     } catch (depositRefundErr) {
       console.error(`Deposit refund failed for booking ${booking._id}:`, depositRefundErr.message);
+    }
+
+    // Payments v2 deposit: drop a scheduled/held one, refund a charged one.
+    try {
+      await cancelV2Deposit(booking);
+    } catch (v2DepositErr) {
+      console.error(`Deposit cancellation failed for booking ${booking._id}:`, v2DepositErr.message);
     }
 
     // ── Update booking ────────────────────────────────────────────────────────

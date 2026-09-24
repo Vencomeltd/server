@@ -124,6 +124,14 @@ const propertySchema = new mongoose.Schema(
       enabled: { type: Boolean, default: false },
       amount: { type: Number, min: 0, default: 0 },
     },
+    // Payments v2 damage-deposit policy (card hold or charged deposit), in
+    // integer pence. Separate from the legacy `deposit` above. Only takes
+    // effect when PAYMENTS_V2 is enabled -- see config/payments.js.
+    depositPolicy: {
+      mode: { type: String, enum: ["none", "card_hold", "charged"], default: "none" },
+      amountPence: { type: Number, min: 0, default: 0 },
+      longStayFallback: { type: String, enum: ["none", "charged"], default: "none" },
+    },
     bookingSettings: {
       approveFirstFive: { type: Boolean, default: true },
       instantBook: { type: Boolean, default: false },

@@ -5,11 +5,12 @@
 const express = require("express");
 const router = express.Router();
 const PlatformSettings = require("../models/PlatformSettings");
+const { isPaymentsV2Enabled } = require("../config/payments");
 
 router.get("/", async (req, res) => {
   try {
     const settings = await PlatformSettings.getSettings();
-    res.json({ currency: settings.currency });
+    res.json({ currency: settings.currency, paymentsV2: isPaymentsV2Enabled() });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }

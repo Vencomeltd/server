@@ -425,3 +425,30 @@ Test cases:
 4. Escrow release window: 72 hours or other (Phase 6)
 5. Who resolves claims: VenCome admin only, or the host and customer first (Phase 5)
 6. Stripe extended holds (up to 30 days): ask Stripe if VenCome qualifies. If yes, the coverage check in Phase 3 changes.
+
+---
+
+## Implementation status (2026-09-24)
+
+Phases 1 to 11 are built and dark-launched. Nothing changes for live customers until `PAYMENTS_V2=true` is set on the server.
+
+**Naming (to avoid clashing with the live deposit/wallet system):** on a booking the spec's `deposit` is `depositHold` and `claim` is `damageClaim`. On a listing the spec's `deposit` is `depositPolicy`. `payment` keeps its spec name. The legacy `deposit`, wallet and Checkout-Session flow are untouched.
+
+**Where things live (vencome-server):**
+- `config/payments.js`: timings, cancellation tiers, `isPaymentsV2Enabled()`
+- `utils/paymentsV2/amounts.js`: pure maths and hold-coverage planning (unit tested)
+- `utils/paymentsV2/depositHold.js`: place, release, capture, refund, claim transfer
+- `utils/paymentsV2/bookingPayment.js`: webhook handling for the new flow
+- `utils/paymentsV2/scheduler.js`: 5-minute cron (holds, card-fix expiry, releases, expiring-hold capture, host payouts)
+- `utils/paymentsV2/cancel.js`: cancellation refunds and transfer reversal
+- `routes/paymentsV2.js`: payment-intent, update-card, host-decision, claims
+- `routes/adminClaims.js`: admin claims queue and resolve
+- `models/StripeEvent.js`: processed webhook event ids
+
+**To switch on (test mode first):**
+1. Set `PAYMENTS_V2=true` on the server (Render).
+2. In the Stripe Dashboard webhook endpoint, add these events on top of `checkout.session.completed` and `charge.dispute.created`: `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.amount_capturable_updated`, `payment_intent.canceled`, `charge.refunded`, `transfer.reversed`.
+3. Dashboard settings (not code): set platform payouts to manual and request funds segregation access.
+4. Run the Phase 12 cases with Stripe test keys and test clocks. The pure-logic cases run with `node --test test/paymentsV2.test.js`.
+
+**Deliberate deviations:** `setup_future_usage` is also set for `charged` deposits (the saved card is needed to charge them); the PaymentIntent uses `allow_redirects: "never"`; a host cancelling after a failed hold gets the normal customer refund tier; a reversed transfer is proportional to the refund percent.

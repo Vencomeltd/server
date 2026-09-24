@@ -143,6 +143,69 @@ const bookingSchema = new mongoose.Schema(
         resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
       },
     },
+    // ── Payments v2 (PaymentIntent + card-hold deposits, see
+    // docs/specs/payments-deposits.md). All money here is integer pence, and
+    // these are separate from the legacy `deposit` block above so the old
+    // Checkout-Session flow keeps working untouched.
+    payment: {
+      paymentIntentId: String,
+      chargeId: String,
+      amountPence: Number,
+      listingPricePence: Number,
+      commissionPence: Number,
+      hostAmountPence: Number,
+      stripeFeePence: Number,
+      transferGroup: String,
+      transferId: String,
+      transferredAt: Date,
+      transferReversedAt: Date,
+      status: {
+        type: String,
+        enum: ["pending", "paid", "transferred", "refunded", "partially_refunded"],
+      },
+    },
+    depositHold: {
+      mode: { type: String, enum: ["none", "card_hold", "charged"] },
+      amountPence: Number,
+      paymentMethodId: String,
+      cardBrand: String,
+      holdAt: Date,
+      paymentIntentId: String,
+      captureBefore: Date,
+      attempt: { type: Number, default: 0 },
+      status: {
+        type: String,
+        enum: [
+          "not_required", "scheduled", "held", "failed", "awaiting_new_card",
+          "awaiting_host_decision", "waived", "released", "captured",
+          "partially_captured", "charged", "refunded",
+        ],
+      },
+      failureReason: String,
+      cardFixDeadline: Date,
+      hostDecision: { type: String, enum: ["proceed_without_deposit", "cancel"] },
+      capturedPence: Number,
+    },
+    damageClaim: {
+      status: { type: String, enum: ["none", "open", "approved", "rejected"], default: "none" },
+      amountPence: Number,
+      reason: String,
+      evidenceUrls: [String],
+      openedAt: Date,
+      resolvedAt: Date,
+      resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      approvedAmountPence: Number,
+      transferId: String,
+      // Admin audit trail: every open/resolve action, who did it and when.
+      audit: [
+        {
+          at: { type: Date, default: Date.now },
+          by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          action: String,
+          amountPence: Number,
+        },
+      ],
+    },
     reviewed: { type: Boolean, default: false },
     completed: { type: Boolean, default: false },
     review: { type: mongoose.Schema.Types.ObjectId, ref: "Review" },
@@ -164,5 +227,9 @@ bookingSchema.index({ checkOut: 1 });
 bookingSchema.index({ property: 1, checkIn: 1, checkOut: 1 });
 bookingSchema.index({ status: 1 });
 bookingSchema.index({ leaseUrl: 1 });
+bookingSchema.index({ "depositHold.status": 1, "depositHold.holdAt": 1 });
+bookingSchema.index({ "depositHold.status": 1, "depositHold.captureBefore": 1 });
+bookingSchema.index({ "payment.status": 1, checkOut: 1 });
+bookingSchema.index({ "payment.paymentIntentId": 1 });
 
 module.exports = mongoose.model("Booking", bookingSchema);

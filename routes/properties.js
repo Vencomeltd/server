@@ -5,6 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const sharp = require("sharp");
 const Property = require("../models/Property");
+const { normaliseDepositPolicy } = require("../utils/paymentsV2/amounts");
 const Category = require("../models/Category");
 const auth = require("../middleware/auth");
 const uploadToR2 = require("../utils/uploadService");
@@ -257,6 +258,16 @@ router.post(
           deposit = { enabled: !!parsed.enabled, amount: parsed.enabled ? Number(parsed.amount) || 0 : 0 };
         } catch {
           deposit = { enabled: false, amount: 0 };
+        }
+      }
+      // Payments v2 damage-deposit policy (integer pence); ignored by the app
+      // unless PAYMENTS_V2 is enabled.
+      let depositPolicy;
+      if (req.body.depositPolicy) {
+        try {
+          depositPolicy = normaliseDepositPolicy(JSON.parse(req.body.depositPolicy));
+        } catch {
+          depositPolicy = undefined;
         }
       }
       const host = req.user.id;
@@ -512,6 +523,7 @@ router.post(
         subcategories: subcategoriesArray,
         availability,
         deposit,
+        depositPolicy,
         timeBlocks,
         unitsCount: parseInt(req.body.unitsCount, 10) || 1,
         blockedDates: blockedDates.map((d) => ({
@@ -1373,7 +1385,8 @@ router.put(
       bookingSettings,
       blockedDates,
       availability,
-      deposit;
+      deposit,
+      depositPolicy;
     try {
       location = parseField("location", "location");
       coordinates = parseField("coordinates", "coordinates");
@@ -1383,6 +1396,7 @@ router.put(
       bookingSettings = parseField("bookingSettings", "bookingSettings");
       blockedDates = parseField("blockedDates", "blockedDates");
       deposit = parseField("deposit", "deposit");
+      depositPolicy = parseField("depositPolicy", "depositPolicy");
     } catch (e) {
       cleanupTempFiles([
         ...(req.files?.images || []),
@@ -1505,6 +1519,7 @@ router.put(
     // FIX: availability and blockedDates were missing from PUT
     if (availability) property.availability = availability;
     if (deposit) property.deposit = { enabled: !!deposit.enabled, amount: deposit.enabled ? Number(deposit.amount) || 0 : 0 };
+    if (depositPolicy) property.depositPolicy = normaliseDepositPolicy(depositPolicy);
     if (blockedDates) {
       // Preserve bookingId/externalEventId/unitIndex -- dropping them here
       // (as this used to) breaks the auto-unblock on decline/cancel, the
