@@ -25,7 +25,7 @@ Then run one phase per session. After each phase, Claude Code stops, reports the
 
 - Market: UK only. Currency: GBP only.
 - Charge type: Stripe Connect **separate charges and transfers**. The platform charges the customer and holds the funds. The host share is transferred after the release window.
-- Commission: 10%, set in admin config (12% is under review). The host gets `listingPrice - commission`. The host amount is always based on the listing price, never on the amount left after Stripe fees.
+- Commission: 10% (confirmed by the client), set in admin config. The host gets `listingPrice - commission`. The host amount is always based on the listing price, never on the amount left after Stripe fees.
 - Stripe fees: VenCome pays them from its commission. No customer service fee. Keep a `serviceFeePercent` config at 0 for later.
 - Booking price is charged in full at booking. This covers no-shows.
 - Deposit modes per listing: `none`, `card_hold`, `charged`.
@@ -36,7 +36,7 @@ Then run one phase per session. After each phase, Claude Code stops, reports the
   - Any other brand: use the Visa rule
   - If the booking is made inside that lead time, place the hold at booking while the customer is present
 - Hold failure: the customer gets 24 hours to add a new card. After that, the host decides: proceed without a deposit, or cancel.
-- Damage claim window: 24 hours after checkout (pending client confirmation, 48 hours is the alternative).
+- Damage claim window: 24 hours after checkout (confirmed by the client).
 - No damage claim: cancel the hold. The customer pays nothing.
 - Damage claim approved: capture only the approved amount.
 - Always read `capture_before` from the charge. Never capture or release after that time.
@@ -419,8 +419,8 @@ Test cases:
 
 ## Open decisions (confirm before the related phase)
 
-1. Damage claim window: 24 or 48 hours (affects Phase 3 and 5)
-2. Commission: 10% or 12% (config value only)
+1. Damage claim window: DECIDED, 24 hours (affects Phase 3 and 5)
+2. Commission: DECIDED, 10% (config value only)
 3. Cancellation policy tiers: 50%/0% or 75%/50% (Phase 8)
 4. Escrow release window: 72 hours or other (Phase 6)
 5. Who resolves claims: VenCome admin only, or the host and customer first (Phase 5)

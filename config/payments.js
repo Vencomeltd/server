@@ -11,7 +11,7 @@ const PAYMENTS_CONFIG = Object.freeze({
   serviceFeePercent: 0, // customer fee, off for now
   chargedDepositMinPence: 20000, // £200
   holdLeadHours: Object.freeze({ visa: 48, mastercard: 72, amex: 72, default: 48 }),
-  claimWindowHours: 24, // pending client confirmation (48 is the alternative)
+  claimWindowHours: 24, // confirmed by the client: hosts have 24h after checkout to open a damage claim
   cardFixHours: 24,
   captureSafetyMarginHours: 6, // act before capture_before minus this margin
   escrowReleaseHours: 48, // hours after checkout before the host payout
