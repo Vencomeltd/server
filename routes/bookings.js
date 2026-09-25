@@ -1102,6 +1102,9 @@ router.get("/:id/cancel-preview", auth, async (req, res) => {
     if (["cancelled", "completed"].includes(booking.status)) {
       return res.status(400).json({ error: `Booking is already ${booking.status}` });
     }
+    if (new Date(booking.checkOut) < new Date()) {
+      return res.status(400).json({ error: "This booking has already ended and can no longer be cancelled." });
+    }
 
     if (!booking.isPaid) {
       const awaitingCapture = Boolean(booking.paymentIntentId);
@@ -1149,6 +1152,12 @@ router.delete("/:id/cancel", auth, async (req, res) => {
       return res
         .status(400)
         .json({ error: `Booking is already ${booking.status}` });
+    }
+
+    // Once the stay is over there's nothing left to cancel or refund by tier
+    // (the booking only flips to "completed" at the next midnight run).
+    if (new Date(booking.checkOut) < new Date()) {
+      return res.status(400).json({ error: "This booking has already ended and can no longer be cancelled." });
     }
 
     const cancelledBy = isHost ? "host" : "guest";

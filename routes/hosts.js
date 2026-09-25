@@ -41,7 +41,9 @@ router.get("/me/onboarding-checklist", auth, async (req, res) => {
         key: "payout",
         label: "Add a payout method",
         description: "Connect a bank account so you can get paid after bookings",
-        completed: (user.payoutMethods || []).length > 0,
+        // Stripe Connect payouts are tracked by stripeOnboardingStatus; the old
+        // payoutMethods list is only for legacy hosts.
+        completed: user.stripeOnboardingStatus === "connected" || (user.payoutMethods || []).length > 0,
         href: "/settings?tab=payout",
       },
       {
