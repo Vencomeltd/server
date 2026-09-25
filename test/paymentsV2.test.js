@@ -74,6 +74,16 @@ test("case 9: a 5-day stay on a card-hold listing falls back (none)", () => {
   assert.equal(plan.fallbackApplied, true);
 });
 
+test("a hold placed straight away only lasts the saved-card window (Visa 4d18h)", () => {
+  // Booked 40h before check-in for a 4-day stay: needs ~166h, but a saved-card Visa hold lasts 114h.
+  const plan = planDeposit({ policy: CARD_HOLD, brand: "visa", checkIn: at(40), checkOut: at(136), now: NOW, listingPricePence: 30000 });
+  assert.equal(plan.status, "not_required");
+  assert.equal(plan.fallbackApplied, true);
+  // A short stay booked at the same time is still covered and placed at booking.
+  const short = planDeposit({ policy: CARD_HOLD, brand: "visa", checkIn: at(40), checkOut: at(41), now: NOW, listingPricePence: 3000 });
+  assert.equal(short.status, "place_now");
+});
+
 test("long-stay fallback 'charged' applies only when the booking is over £200", () => {
   const policy = { ...CARD_HOLD, longStayFallback: "charged" };
   const checkIn = at(24 * 30);

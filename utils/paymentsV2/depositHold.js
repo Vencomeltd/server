@@ -91,7 +91,13 @@ async function placeDeposit(booking, { onSession }) {
         payment_method_types: ["card"],
         capture_method: isHold ? "manual" : "automatic",
         confirm: true,
-        off_session: !onSession,
+        // Always a saved-card (merchant-initiated) charge, even straight after
+        // checkout: the guest isn't at a screen when the webhook fires, so an
+        // "on-session" attempt gets challenged for bank authentication that
+        // nobody can complete (found in test mode with an SCA test card). The
+        // card was saved with setup_future_usage: "off_session" at checkout,
+        // which is the permission this relies on.
+        off_session: true,
         description: `${isHold ? "Deposit hold" : "Deposit"} for booking ${booking._id}`,
         metadata: { bookingId: booking._id.toString(), type: isHold ? "deposit_hold" : "deposit_charged" },
       },

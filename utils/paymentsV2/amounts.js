@@ -77,7 +77,10 @@ function planDeposit({ policy, brand, checkIn, checkOut, now = new Date(), listi
   const onSession = nowMs >= holdAtMs;
   const effectiveHoldAtMs = onSession ? nowMs : holdAtMs;
   const needUntilMs = checkOutMs + (config.claimWindowHours + config.captureSafetyMarginHours) * HOUR_MS;
-  const covered = effectiveHoldAtMs + holdWindowHours(brand, onSession) * HOUR_MS >= needUntilMs;
+  // Every hold is placed as a saved-card (off-session) charge -- see
+  // depositHold.placeDeposit -- so it only lasts the off-session window, even
+  // when it's placed straight away at booking.
+  const covered = effectiveHoldAtMs + holdWindowHours(brand, false) * HOUR_MS >= needUntilMs;
 
   if (covered) {
     return {
