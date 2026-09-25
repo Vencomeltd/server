@@ -1300,6 +1300,53 @@ router.delete("/:id/cancel", auth, async (req, res) => {
       refundPercent,
     });
 
+    // ── Email both parties (best effort -- never blocks the cancellation) ─────
+    (async () => {
+      const [guestUser, hostUser] = await Promise.all([
+        User.findById(booking.guest).select("email firstName displayName"),
+        User.findById(booking.host).select("email firstName displayName"),
+      ]);
+      const title = booking.property?.title || "the space";
+      const when = new Date(booking.checkIn).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+      const nameOf = (u) => u?.displayName || u?.firstName || "there";
+      const shell = (heading, body) => `
+        <div style="font-family:'Manrope',Arial,sans-serif;background:#f4f4f7;padding:20px;">
+          <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;">
+            <div style="background:#f0f0f0;padding:20px;text-align:center;"><img src="https://www.vencome.com/logo-blue.png" alt="VenCome" style="max-width:150px;"></div>
+            <div style="padding:30px;color:#333;"><h2 style="color:#305CDE;text-align:center;margin-top:0;">${heading}</h2>${body}</div>
+          </div>
+        </div>`;
+      const refundLine =
+        booking.refund.amount > 0
+          ? `A refund of <strong>£${booking.refund.amount.toFixed(2)}</strong> (${refundPercent}%) has been issued to the original payment method.`
+          : "No payment was taken for this booking, so there is nothing to refund.";
+
+      if (guestUser?.email) {
+        sendEmail({
+          to: guestUser.email,
+          subject: "Your booking has been cancelled",
+          html: shell(
+            "Booking cancelled",
+            `<p>Hi <strong>${nameOf(guestUser)}</strong>,</p><p>${
+              cancelledBy === "host" ? "The host cancelled" : "You cancelled"
+            } your booking at <strong>${title}</strong> on ${when}.</p><p>${refundLine}</p>`
+          ),
+        }).catch((err) => console.error("Cancellation email (guest) failed:", err.message));
+      }
+      if (hostUser?.email) {
+        sendEmail({
+          to: hostUser.email,
+          subject: "A booking has been cancelled",
+          html: shell(
+            "Booking cancelled",
+            `<p>Hi <strong>${nameOf(hostUser)}</strong>,</p><p>${
+              cancelledBy === "host" ? "You cancelled" : "The guest cancelled"
+            } the booking at <strong>${title}</strong> on ${when}. The dates are available again.</p>`
+          ),
+        }).catch((err) => console.error("Cancellation email (host) failed:", err.message));
+      }
+    })().catch((err) => console.error("Cancellation emails failed:", err.message));
+
     return res.json({
       message: "Booking cancelled successfully",
       booking,
