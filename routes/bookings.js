@@ -1088,6 +1088,46 @@ function getRefundPolicy(policy, checkIn) {
 // ─── Cancel booking ───────────────────────────────────────────────────────────
 // DELETE /bookings/:id/cancel
 // Accessible by: guest (own booking) or host (their property's booking)
+// GET /bookings/:id/cancel-preview -- what cancelling right now would refund,
+// so the guest sees the amount before confirming. Read-only; uses exactly the
+// same tier and host-cancels-in-full rules as the cancel route below.
+router.get("/:id/cancel-preview", auth, async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id).populate("property");
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+
+    const isGuest = booking.guest.toString() === req.user.id;
+    const isHost = booking.host.toString() === req.user.id;
+    if (!isGuest && !isHost) return res.status(403).json({ error: "Not authorised to view this booking" });
+    if (["cancelled", "completed"].includes(booking.status)) {
+      return res.status(400).json({ error: `Booking is already ${booking.status}` });
+    }
+
+    if (!booking.isPaid) {
+      const awaitingCapture = Boolean(booking.paymentIntentId);
+      return res.json({
+        charged: false,
+        percent: 0,
+        refundAmount: 0,
+        reason: awaitingCapture
+          ? "Your card hasn't been charged, so nothing needs refunding — the authorisation will simply be released."
+          : "No payment has been taken for this booking.",
+      });
+    }
+
+    let { refundPercent, reason } = getRefundPolicy(booking.property?.bookingSettings?.refundPolicy, booking.checkIn);
+    if (isHost && refundPercent < 100) {
+      refundPercent = 100;
+      reason = "Host-initiated cancellation — full refund";
+    }
+    const paid = booking.payment?.amountPence ? booking.payment.amountPence / 100 : booking.totalPrice;
+    res.json({ charged: true, percent: refundPercent, refundAmount: Math.round(paid * refundPercent) / 100, reason });
+  } catch (err) {
+    console.error("Cancel preview error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 router.delete("/:id/cancel", auth, async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id).populate("property");
