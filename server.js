@@ -70,9 +70,21 @@ const allowedOrigins = [
   "https://www.vencome.co.uk",
 ];
 
+// Every Vercel preview deployment gets a fresh, unpredictable URL
+// (client-<random>-ven-come.vercel.app), so it can never be added to the
+// static allowlist above in advance -- without this, every API call from
+// any preview build was silently CORS-blocked, which is indistinguishable
+// client-side from a real 404 (PropertyDetails.jsx shows "not found" for
+// any failed fetch), so every page looked broken on preview.
+const vercelPreviewOriginPattern = /^https:\/\/client-[a-z0-9]+-ven-come\.vercel\.app$/;
+const isAllowedOrigin = (origin) =>
+  !origin || allowedOrigins.includes(origin) || vercelPreviewOriginPattern.test(origin);
+const corsOriginCheck = (origin, callback) =>
+  isAllowedOrigin(origin) ? callback(null, true) : callback(new Error("Not allowed by CORS"));
+
 const io = socketIo(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: corsOriginCheck,
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -169,7 +181,7 @@ app.set("io", io);
 
 // Middleware
 const corsOptions = {
-  origin: allowedOrigins,
+  origin: corsOriginCheck,
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
