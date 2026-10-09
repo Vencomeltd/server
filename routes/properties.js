@@ -134,11 +134,22 @@ const uploadFilesToR2 = async (files) => {
     const dir = path.dirname(file.path);
 
     try {
+      // One shared decode of the source file, cloned per width variant --
+      // this used to call sharp(file.path) separately for each of the 4
+      // widths, re-reading and re-decoding the same original 4 times in
+      // parallel (x3 for mapWithConcurrency's concurrent files = up to 12
+      // simultaneous decodes). For a large raw photo (reported: a 25MB
+      // upload that "refused to compress" until a safety timeout dropped
+      // it), that's 4x the CPU/memory work this step actually needs.
+      // sharp's own docs recommend exactly this decode-once/.clone()
+      // pattern for deriving multiple outputs from one source.
+      const source = sharp(file.path);
       const variants = await Promise.all(
         IMAGE_WIDTHS.map(async (width) => {
           const variantFilename = `${baseName}-w${width}.webp`;
           const variantPath = path.join(dir, variantFilename);
-          await sharp(file.path)
+          await source
+            .clone()
             .resize({ width, withoutEnlargement: true })
             .webp({ quality: 80 })
             .toFile(variantPath);
