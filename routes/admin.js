@@ -1,4 +1,5 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
@@ -1018,7 +1019,10 @@ router.patch("/properties/:id", async (req, res) => {
   if (rules !== undefined) update["features.houseRules"] = rules;
   if (listingTerms !== undefined) update.listingTerms = listingTerms;
 
-  const property = await Property.findByIdAndUpdate(req.params.id, update, { new: true })
+  const filter = mongoose.isObjectIdOrHexString(req.params.id)
+    ? { _id: req.params.id }
+    : { slug: req.params.id };
+  const property = await Property.findOneAndUpdate(filter, update, { new: true })
     .populate("host", "email displayName firstName");
   if (!property) return res.status(404).json({ error: "Property not found" });
 
