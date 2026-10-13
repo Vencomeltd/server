@@ -388,7 +388,7 @@ app.get("/sitemap.xml", async (req, res) => {
     const Category = require("./models/Category");
     const { generateSlug } = require("./utils/slugify");
     const [properties, blogs, categories, serviceLocationCandidates, allCategories] = await Promise.all([
-      Property.find({ isActive: true }).select("_id slug updatedAt").lean(),
+      Property.find({ isActive: true }).select("_id slug updatedAt category categories").lean(),
       require("./models/Blog").find({ status: "published" }).select("slug updatedAt").lean(),
       Category.find({ status: "published" }).select("_id slug updatedAt").lean(),
       // Only listings that could possibly power a /:subcategorySlug/:locationSlug
@@ -431,7 +431,6 @@ app.get("/sitemap.xml", async (req, res) => {
     const baseUrl = `https://${host}`;
     const staticUrls = [
       { loc: `${baseUrl}/`, priority: "1.0", changefreq: "daily" },
-      { loc: `${baseUrl}/search`, priority: "0.9", changefreq: "daily" },
       { loc: `${baseUrl}/about`, priority: "0.6", changefreq: "monthly" },
       { loc: `${baseUrl}/contact`, priority: "0.6", changefreq: "monthly" },
       { loc: `${baseUrl}/faq`, priority: "0.6", changefreq: "monthly" },
@@ -460,7 +459,16 @@ app.get("/sitemap.xml", async (req, res) => {
       lastmod: b.updatedAt ? new Date(b.updatedAt).toISOString().split("T")[0] : undefined,
     }));
 
-    const categoryUrls = categories.map((c) => ({
+    // Only categories with at least one active listing -- empty ones render
+    // a noindexed "launching soon" page, and listing them here sent Google
+    // mixed signals (sitemap says index, page says noindex). Same match as
+    // GET /categories/:id: singular category field or categories array.
+    const categoryIdsWithListings = new Set();
+    for (const p of properties) {
+      if (p.category) categoryIdsWithListings.add(String(p.category));
+      for (const c of p.categories || []) categoryIdsWithListings.add(String(c));
+    }
+    const categoryUrls = categories.filter((c) => categoryIdsWithListings.has(String(c._id))).map((c) => ({
       loc: `${baseUrl}/category/${c.slug || c._id}`,
       priority: "0.7",
       changefreq: "weekly",
