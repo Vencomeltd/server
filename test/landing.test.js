@@ -32,10 +32,11 @@ test("slug: lowercase ASCII, single hyphens, no stray edges", () => {
 
 test("pages: known combinations exist, unknown ones are 404 (null)", () => {
   const idx = buildLandingIndex({ properties: [listing("London", "Treatment Rooms")], services: SERVICES });
-  for (const path of ["/uk", "/uk/london", "/uk/london/treatment-rooms", "/uk/london/nail-studio", "/treatment-rooms", "/nail-studio"]) {
+  for (const path of ["/uk", "/uk/london", "/uk/london/treatment-rooms", "/treatment-rooms", "/nail-studio"]) {
     assert.ok(resolveLandingPath(idx, path), `${path} should exist`);
   }
-  for (const path of ["/fr", "/uk/paris", "/uk/london/unknown-service", "/unknown-service", "/uk/london/treatment-rooms/x"]) {
+  // /uk/london/nail-studio: known city + known service but 0 listings -> 404.
+  for (const path of ["/fr", "/uk/paris", "/uk/london/nail-studio", "/uk/london/unknown-service", "/unknown-service", "/uk/london/treatment-rooms/x"]) {
     assert.equal(resolveLandingPath(idx, path), null, `${path} should 404`);
   }
 });
@@ -101,6 +102,7 @@ test("indexable: country and service hub follow their child pages", () => {
   assert.equal(resolveLandingPath(idx, "/uk").indexable, true);
   assert.equal(resolveLandingPath(idx, "/treatment-rooms").indexable, true);
   assert.equal(resolveLandingPath(idx, "/nail-studio").indexable, false);
+  assert.equal(resolveLandingPath(idx, "/nail-studio").listingCount, 0);
   assert.equal(resolveLandingPath(idx, "/uk").listingCount, 4);
 });
 

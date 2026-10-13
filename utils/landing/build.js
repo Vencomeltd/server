@@ -8,9 +8,12 @@ const { toUrlSlug } = require("./slug");
 // Which pages exist (anything else is a 404, spec rule 4):
 //   /{country}                    >= 1 live listing in that country
 //   /{country}/{city}             >= 1 live listing in that city
-//   /{country}/{city}/{service}   city page exists and the service is known
-//                                 (may have 0 listings -- renders noindex)
+//   /{country}/{city}/{service}   >= 1 live listing of that service in that
+//                                 city (empty combinations 404 -- Jayden,
+//                                 2026-10-13, to avoid hundreds of thin pages)
 //   /{service}                    any known service whose slug isn't reserved
+//                                 (the footer links to every service, so
+//                                 empty hubs still exist, noindexed)
 // Indexable when (spec "Indexable when" column):
 //   city, city_service   >= MIN_LISTINGS live listings AND approved intro
 //   country              at least one of its city pages is indexable
@@ -107,6 +110,7 @@ function buildLandingIndex({ properties = [], services = [], landingDocs = [] })
         const ids = city.listings
           .filter((p) => servicesOf(p).some((name) => serviceByName.get(name) === service))
           .map((p) => String(p._id));
+        if (ids.length === 0) continue;
         const path = `${cityPath}/${service.slug}`;
         const page = pageFor(
           "city_service",
