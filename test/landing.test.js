@@ -193,3 +193,39 @@ test("response: child links per page type", () => {
   assert.deepEqual(kids("/treatment-rooms"), ["/uk/london/treatment-rooms", "/uk/leeds/treatment-rooms"]);
   assert.deepEqual(kids("/uk/london/treatment-rooms"), ["/uk/london/nail-studio"]);
 });
+
+// --- utils/landing/admin.js -----------------------------------------------
+const { adminRowsFor } = require("../utils/landing/admin");
+
+test("admin rows: status says what's blocking each page, in fix order", () => {
+  const props = [1, 2, 3].map(() => listing("London", "Treatment Rooms"))
+    .concat([listing("Leeds", "Treatment Rooms"), listing("York", "Nail Studio"), listing("York", "Nail Studio"), listing("York", "Nail Studio")]);
+  const idx = buildLandingIndex({
+    properties: props,
+    services: SERVICES,
+    landingDocs: [
+      approved("city", "uk", "london"),
+      { type: "city", countrySlug: "uk", citySlug: "york", serviceSlug: "", intro: "Draft", introApproved: false },
+      approved("city", "uk", "leeds"),
+    ],
+  });
+  const row = (path) => adminRowsFor(idx).find((r) => r.path === path);
+  assert.equal(row("/uk/london").status, "indexable");
+  assert.equal(row("/uk/leeds").status, "needs_listings"); // approved intro but 1 listing
+  assert.equal(row("/uk/york").status, "needs_approval"); // 3 listings, draft intro
+  assert.equal(row("/uk/london/treatment-rooms").status, "needs_intro"); // 3 listings, no intro
+  assert.equal(row("/uk").status, "indexable");
+  assert.equal(row("/nail-studio").status, "waiting_on_cities");
+  assert.equal(row("/uk/york").intro, "Draft", "admins see drafts");
+  assert.equal(row("/uk/london/treatment-rooms").label, "Treatment Rooms in London");
+});
+
+test("admin rows: ordered country, cities, city+services, services; busiest first", () => {
+  const idx = buildLandingIndex({
+    properties: [listing("Leeds", "Treatment Rooms"), listing("London", "Treatment Rooms"), listing("London", "Nail Studio")],
+    services: SERVICES,
+  });
+  const rows = adminRowsFor(idx);
+  assert.deepEqual([...new Set(rows.map((r) => r.type))], ["country", "city", "city_service", "service"]);
+  assert.deepEqual(rows.filter((r) => r.type === "city").map((r) => r.path), ["/uk/london", "/uk/leeds"]);
+});

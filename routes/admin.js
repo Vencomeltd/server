@@ -130,6 +130,8 @@ router.use(["/users", "/verifications", "/reports", "/properties", "/bookings", 
 router.use(["/payments", "/payouts", "/invoices", "/commission"], requireAdminRole("finance"));
 router.use(["/markets", "/categories", "/broadcast"], requireAdminRole("content"));
 router.use(["/team", "/settings"], requireAdminRole());
+// SEO landing-page intros (write + approve) -- see routes/adminLandingPages.js.
+router.use("/landing-pages", requireAdminRole("content"), require("./adminLandingPages"));
 
 // ─── Visitor analytics -- country + how they found the site ───────────────────
 router.get("/analytics/visitors", async (req, res) => {
