@@ -229,3 +229,25 @@ test("admin rows: ordered country, cities, city+services, services; busiest firs
   assert.deepEqual([...new Set(rows.map((r) => r.type))], ["country", "city", "city_service", "service"]);
   assert.deepEqual(rows.filter((r) => r.type === "city").map((r) => r.path), ["/uk/london", "/uk/leeds"]);
 });
+
+// --- utils/landing/legacy.js ----------------------------------------------
+const { legacyTargetPath } = require("../utils/landing/legacy");
+
+test("legacy: old service+location URL goes to the city+service page of its listings' city", () => {
+  const props = [listing("London", "Treatment Rooms"), listing("Leeds", "Treatment Rooms"), listing("London", "Nail Studio")];
+  const idx = buildLandingIndex({ properties: props, services: SERVICES });
+  const hub = resolveLandingPath(idx, "/treatment-rooms");
+  assert.equal(legacyTargetPath(idx, hub, [props[0]]), "/uk/london/treatment-rooms");
+  // Majority city wins when matched listings span cities.
+  const two = [listing("Leeds", "Treatment Rooms"), listing("Leeds", "Treatment Rooms"), listing("London", "Treatment Rooms")];
+  const idx2 = buildLandingIndex({ properties: two, services: SERVICES });
+  assert.equal(legacyTargetPath(idx2, resolveLandingPath(idx2, "/treatment-rooms"), two), "/uk/leeds/treatment-rooms");
+});
+
+test("legacy: no matching listings (or none in a mapped country) falls back to the service hub", () => {
+  const idx = buildLandingIndex({ properties: [listing("London", "Treatment Rooms")], services: SERVICES });
+  const hub = resolveLandingPath(idx, "/nail-studio");
+  assert.equal(legacyTargetPath(idx, hub, []), "/nail-studio");
+  const paris = listing("Paris", "Nail Studio", { location: { country: "France", city: "Paris" } });
+  assert.equal(legacyTargetPath(idx, hub, [paris]), "/nail-studio");
+});

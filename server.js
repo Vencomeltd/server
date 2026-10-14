@@ -387,44 +387,16 @@ app.get("/sitemap.xml", async (req, res) => {
   try {
     const Property = require("./models/Property");
     const Category = require("./models/Category");
-    const { generateSlug } = require("./utils/slugify");
-    const [properties, blogs, categories, serviceLocationCandidates, allCategories] = await Promise.all([
+    const { loadLandingIndex } = require("./utils/landing");
+    const [properties, blogs, categories, landingIndex] = await Promise.all([
       Property.find({ isActive: true }).select("_id slug updatedAt category categories").lean(),
       require("./models/Blog").find({ status: "published" }).select("slug updatedAt").lean(),
       Category.find({ status: "published" }).select("_id slug updatedAt").lean(),
-      // Only listings that could possibly power a /:subcategorySlug/:locationSlug
-      // page -- mirrors GET /properties/by-service-location's own match shape.
-      Property.find({
-        isActive: true,
-        "location.neighborhood": { $nin: [null, ""] },
-        $or: [{ subcategory: { $nin: [null, ""] } }, { subcategories: { $exists: true, $ne: [] } }],
-      })
-        .select("subcategory subcategories location.neighborhood")
-        .lean(),
-      // Subcategory name -> slug map, independent of the parent category's
-      // published status (a service+location page is scoped to the
-      // subcategory, not the category page).
-      Category.find({}).select("subcategories.name subcategories.slug").lean(),
+      // SEO landing pages (/uk, /uk/london, /uk/london/chairs, /chairs) --
+      // same index and indexability rule the pages themselves use, so the
+      // sitemap only ever lists pages that answer index, follow.
+      loadLandingIndex(),
     ]);
-
-    // Build every real (subcategorySlug, locationSlug) combo that has at
-    // least one matching active listing, so nothing thin ever gets indexed.
-    const subcategorySlugByName = new Map();
-    for (const cat of allCategories) {
-      for (const sub of cat.subcategories || []) {
-        if (sub.name && sub.slug) subcategorySlugByName.set(sub.name, sub.slug);
-      }
-    }
-    const serviceLocationCombos = new Map();
-    for (const p of serviceLocationCandidates) {
-      const locationSlug = generateSlug(p.location.neighborhood);
-      const subcategoryNames = [p.subcategory, ...(p.subcategories || [])].filter(Boolean);
-      for (const name of subcategoryNames) {
-        const subcategorySlug = subcategorySlugByName.get(name);
-        if (!subcategorySlug) continue;
-        serviceLocationCombos.set(`${subcategorySlug}/${locationSlug}`, true);
-      }
-    }
 
     const allowedHosts = allowedOrigins.map((o) => o.replace(/^https?:\/\//, ""));
     const forwardedHost = req.headers["x-forwarded-host"];
@@ -476,13 +448,11 @@ app.get("/sitemap.xml", async (req, res) => {
       lastmod: c.updatedAt ? new Date(c.updatedAt).toISOString().split("T")[0] : undefined,
     }));
 
-    const serviceLocationUrls = Array.from(serviceLocationCombos.keys()).map((combo) => ({
-      loc: `${baseUrl}/${combo}`,
-      priority: "0.7",
-      changefreq: "weekly",
-    }));
+    const landingUrls = [...landingIndex.pages.values()]
+      .filter((p) => p.indexable)
+      .map((p) => ({ loc: `${baseUrl}${p.path}`, priority: "0.7", changefreq: "weekly" }));
 
-    const allUrls = [...staticUrls, ...propertyUrls, ...blogUrls, ...categoryUrls, ...serviceLocationUrls];
+    const allUrls = [...staticUrls, ...propertyUrls, ...blogUrls, ...categoryUrls, ...landingUrls];
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
