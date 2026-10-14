@@ -140,3 +140,56 @@ test("breadcrumbs mirror the URL path", () => {
     { name: "Treatment Rooms", path: "/treatment-rooms" },
   ]);
 });
+
+// --- utils/landing/response.js -------------------------------------------
+const { buildLandingResponse, PAGE_SIZE } = require("../utils/landing/response");
+
+const bigIndex = () => {
+  const props = [];
+  for (let i = 0; i < PAGE_SIZE + 5; i++) props.push(listing("London", "Treatment Rooms"));
+  props.push(listing("London", "Nail Studio"), listing("Leeds", "Treatment Rooms"));
+  return buildLandingIndex({
+    properties: props,
+    services: SERVICES,
+    landingDocs: [
+      approved("city", "uk", "london"),
+      { type: "city", countrySlug: "uk", citySlug: "leeds", serviceSlug: "", intro: "Draft copy", introApproved: false },
+    ],
+  });
+};
+
+test("response: pages through listings and 404s out-of-range or junk page numbers", () => {
+  const idx = bigIndex();
+  const page = resolveLandingPath(idx, "/uk/london/treatment-rooms");
+  const p1 = buildLandingResponse(idx, page, undefined);
+  assert.equal(p1.status, 200);
+  assert.equal(p1.listingIds.length, PAGE_SIZE);
+  assert.deepEqual(p1.body.pagination, { page: 1, totalPages: 2, pageSize: PAGE_SIZE, total: PAGE_SIZE + 5 });
+  const p2 = buildLandingResponse(idx, page, "2");
+  assert.equal(p2.listingIds.length, 5);
+  assert.equal(p2.listingIds[0], page.listingIds[PAGE_SIZE]);
+  for (const bad of ["3", "0", "-1", "1.5", "abc"]) {
+    assert.equal(buildLandingResponse(idx, page, bad).status, 404, `page=${bad}`);
+  }
+  // An empty service hub still has page 1.
+  assert.equal(buildLandingResponse(idx, resolveLandingPath(idx, "/nail-studio"), undefined).status, 200);
+});
+
+test("response: approved intros are public, drafts are hidden, listingIds aren't leaked", () => {
+  const idx = bigIndex();
+  const london = buildLandingResponse(idx, resolveLandingPath(idx, "/uk/london"), undefined).body.page;
+  const leeds = buildLandingResponse(idx, resolveLandingPath(idx, "/uk/leeds"), undefined).body.page;
+  assert.equal(london.intro, "Intro copy.");
+  assert.equal(leeds.intro, "");
+  assert.equal("introApproved" in leeds, false);
+  assert.equal("listingIds" in london, false);
+});
+
+test("response: child links per page type", () => {
+  const idx = bigIndex();
+  const kids = (path) => buildLandingResponse(idx, resolveLandingPath(idx, path), undefined).body.children.map((c) => c.path);
+  assert.deepEqual(kids("/uk"), ["/uk/london", "/uk/leeds"]);
+  assert.deepEqual(kids("/uk/london"), ["/uk/london/treatment-rooms", "/uk/london/nail-studio"]);
+  assert.deepEqual(kids("/treatment-rooms"), ["/uk/london/treatment-rooms", "/uk/leeds/treatment-rooms"]);
+  assert.deepEqual(kids("/uk/london/treatment-rooms"), ["/uk/london/nail-studio"]);
+});

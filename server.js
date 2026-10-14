@@ -347,6 +347,7 @@ app.use(async (req, res, next) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/properties", propertyRoutes);
 app.use("/api/categories", categoryRoutes);
+app.use("/api/landing", require("./routes/landing"));
 app.use("/api/bookings", require("./routes/paymentsV2"));
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/availability", availabiltyRoutes);
