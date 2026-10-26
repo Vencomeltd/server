@@ -109,7 +109,9 @@ router.get("/:id", async (req, res) => {
       .populate("host", "firstName lastName displayName profileImage")
       .populate("category", "name slug")
       .populate("categories", "name slug")
-      .select("-__v"); // Exclude extra fields like __v
+      // __v is noise; blockedDates can be thousands of entries and the
+      // category grid never shows a calendar.
+      .select("-__v -blockedDates");
 
     res.json({ category, properties });
   } catch (err) {
