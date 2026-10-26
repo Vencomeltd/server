@@ -702,7 +702,10 @@ router.get("/", async (req, res) => {
     // listing kept showing there (and here generally) even though isActive
     // was correctly set to false by PATCH /:id/status.
     const [properties, total] = await Promise.all([
+      // blockedDates can hold thousands of entries per listing (one had
+      // 287 KB of them) and list views never show a calendar -- leave it out.
       Property.find(filter)
+        .select("-blockedDates")
         .populate("host", "firstName lastName displayName email profileImage")
         .populate("category", "name")
         .populate("categories", "name")
@@ -754,6 +757,7 @@ router.get("/near-me", async (req, res) => {
     const geo = geoip.lookup(ip);
 
     const properties = await Property.find({ isActive: true })
+      .select("-blockedDates") // list view, see GET / above
       .populate("host", "firstName lastName displayName email profileImage")
       .populate("category", "name")
       .populate("categories", "name")
@@ -1048,7 +1052,15 @@ router.get("/search", async (req, res) => {
       );
     }
 
-    const responsePayload = { count: properties.length, properties };
+    // blockedDates is needed above for the availability check, but list
+    // views never show a calendar and it can be huge -- drop it from the
+    // response (toJSON keeps the shape res.json would otherwise produce).
+    const listed = properties.map((property) => {
+      const json = property.toJSON();
+      delete json.blockedDates;
+      return json;
+    });
+    const responsePayload = { count: listed.length, properties: listed };
 
     await client.setEx(cacheKey, 600, JSON.stringify(responsePayload));
 

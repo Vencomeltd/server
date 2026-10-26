@@ -68,7 +68,8 @@ router.get("/", async (req, res) => {
     const docs = await Property.find({ _id: { $in: result.listingIds }, isActive: true })
       .populate("host", "firstName lastName displayName profileImage")
       .populate("category", "name slug")
-      .select("-__v")
+      // Listing cards never show a calendar; blockedDates can be huge.
+      .select("-__v -blockedDates")
       .lean();
     const byId = new Map(docs.map((d) => [String(d._id), d]));
     const listings = result.listingIds.map((id) => byId.get(id)).filter(Boolean);
