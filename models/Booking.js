@@ -70,6 +70,9 @@ const bookingSchema = new mongoose.Schema(
     // marks it so an unpaid one only holds its dates for 30 minutes
     // (utils/unitAvailability.js). Unset on bookings made before it existed.
     instantBook: Boolean,
+    // Recurring / Multiple Dates: one booking per date, all sharing this id.
+    // They're paid for with one PaymentIntent and approved/declined together.
+    groupId: { type: String, index: true },
     // Lets the host approve/decline straight from the "New booking request"
     // email without logging in first -- single-use (cleared after the
     // booking leaves "pending", however that happens) and time-limited.

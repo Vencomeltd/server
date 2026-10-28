@@ -13,7 +13,8 @@ const { HOUR_MS, computeBookingAmounts, planDeposit, leadHours } = require("../u
 const { getOrCreateCustomer, placeDeposit } = require("../utils/paymentsV2/depositHold");
 const { cancelFromHostDecision } = require("../utils/paymentsV2/cancel");
 const notify = require("../utils/paymentsV2/notify");
-const { ensureBookingStillHeld } = require("../utils/bookingHold");
+const { ensureBookingStillHeld, cancelUnpaidBookings } = require("../utils/bookingHold");
+const { bookingDateLabel } = require("../utils/bookingNotifications");
 
 const router = express.Router();
 
@@ -51,6 +52,9 @@ router.post("/:bookingId/payment-intent", auth, [bookingIdParam], validate, asyn
     if (booking.isPaid) return res.status(400).json({ error: "Booking already paid" });
     if (["cancelled", "declined", "completed"].includes(booking.status)) {
       return res.status(400).json({ error: `Booking is ${booking.status}` });
+    }
+    if (booking.groupId) {
+      return res.status(400).json({ error: "This booking is part of a series -- pay for it from the series checkout.", groupId: booking.groupId });
     }
     if (!(await ensureBookingStillHeld(booking))) {
       return res.status(409).json({ error: "Sorry, these dates were booked by someone else while you were checking out. Please choose new dates." });
@@ -127,6 +131,119 @@ router.post("/:bookingId/payment-intent", auth, [bookingIdParam], validate, asyn
     res.status(500).json({ error: "Could not start payment" });
   }
 });
+
+// ── Series (Recurring / Multiple Dates): one PaymentIntent for every date ──
+// Each booking keeps its own amounts, so payouts and per-date refunds work as
+// for a single booking; they share the PaymentIntent, which is captured or
+// released for the whole series at once (routes/bookings.js applyDecision).
+router.post(
+  "/group/:groupId/payment-intent",
+  auth,
+  [param("groupId").isUUID().withMessage("Invalid series id")],
+  validate,
+  async (req, res) => {
+    if (!isPaymentsV2Enabled()) return res.json({ enabled: false });
+    const { groupId } = req.params;
+
+    try {
+      const bookings = await Booking.find({ groupId, guest: req.user.id })
+        .sort({ checkIn: 1 })
+        .populate("property", "title depositPolicy");
+      if (!bookings.length) return res.status(404).json({ error: "Booking not found" });
+      if (bookings.some((b) => b.isPaid || b.paymentAuthorizedAt)) {
+        return res.status(400).json({ error: "This series has already been paid for" });
+      }
+      for (const booking of bookings) {
+        if (!(await ensureBookingStillHeld(booking))) {
+          await cancelUnpaidBookings({ groupId });
+          return res.status(409).json({
+            error: `${bookingDateLabel(booking)} is no longer available, so this series was cancelled. Please choose new dates.`,
+          });
+        }
+      }
+
+      const perBooking = bookings.map((booking) => computeBookingAmounts(booking));
+      const amountPence = perBooking.reduce((sum, a) => sum + a.amountPence, 0);
+      if (amountPence < 30) return res.status(400).json({ error: "This booking total is below the minimum card payment." });
+
+      const [first] = bookings;
+      const policy = first.property?.depositPolicy;
+      const plan = planDeposit({
+        policy,
+        brand: undefined,
+        checkIn: first.checkIn,
+        checkOut: first.checkOut,
+        listingPricePence: perBooking[0].listingPricePence,
+      });
+      const depositSummary = {
+        mode: plan.mode,
+        amountPence: plan.mode === "none" ? 0 : policy.amountPence,
+        reason: plan.reason,
+        holdLeadHours: leadHours("visa"),
+        holdLeadHoursMax: Math.max(...Object.values(PAYMENTS_CONFIG.holdLeadHours)),
+        perDate: true,
+      };
+      const summary = bookings.map((b, i) => ({
+        _id: b._id,
+        checkIn: b.checkIn,
+        checkOut: b.checkOut,
+        status: b.status,
+        amountPence: perBooking[i].amountPence,
+      }));
+
+      const existingId = first.payment?.paymentIntentId;
+      if (existingId) {
+        const existing = await stripe.paymentIntents.retrieve(existingId);
+        if (["requires_payment_method", "requires_confirmation", "requires_action"].includes(existing.status)) {
+          return res.json({ enabled: true, clientSecret: existing.client_secret, amountPence: existing.amount, deposit: depositSummary, bookings: summary });
+        }
+        return res.status(400).json({ error: "This series already has a payment in progress." });
+      }
+
+      const guest = await User.findById(req.user.id);
+      const customerId = await getOrCreateCustomer(guest);
+      const saveCard = Boolean(policy && policy.mode !== "none" && policy.amountPence > 0);
+
+      const pi = await stripe.paymentIntents.create(
+        {
+          amount: amountPence,
+          currency: PAYMENTS_CONFIG.currency,
+          customer: customerId,
+          capture_method: first.status === "pending" ? "manual" : "automatic",
+          ...(saveCard && { setup_future_usage: "off_session" }),
+          transfer_group: `series_${groupId}`,
+          description: `Series ${groupId} — ${first.property?.title || "VenCome space"} (${bookings.length} dates)`,
+          // bookingId is the first date; the webhook applies it to the whole series.
+          metadata: { bookingId: first._id.toString(), groupId, type: "booking_group" },
+          ...(saveCard
+            ? { payment_method_types: ["card"] }
+            : { automatic_payment_methods: { enabled: true, allow_redirects: "never" } }),
+        },
+        { idempotencyKey: `booking-group-pi:${groupId}:v1` }
+      );
+
+      await Promise.all(
+        bookings.map((booking, i) => {
+          const amounts = perBooking[i];
+          booking.paymentIntentId = pi.id;
+          booking.payment.paymentIntentId = pi.id;
+          booking.payment.amountPence = amounts.amountPence;
+          booking.payment.listingPricePence = amounts.listingPricePence;
+          booking.payment.commissionPence = amounts.commissionPence;
+          booking.payment.hostAmountPence = amounts.hostAmountPence;
+          booking.payment.transferGroup = `booking_${booking._id}`;
+          booking.payment.status = "pending";
+          return booking.save();
+        })
+      );
+
+      res.json({ enabled: true, clientSecret: pi.client_secret, amountPence, deposit: depositSummary, bookings: summary });
+    } catch (err) {
+      console.error("Create series payment intent error:", err);
+      res.status(500).json({ error: "Could not start payment" });
+    }
+  }
+);
 
 // ── Phase 4a: the guest replaces a card that failed the deposit hold ────────
 // Two steps: no body -> a SetupIntent to confirm on the client; then

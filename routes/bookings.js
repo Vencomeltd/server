@@ -20,6 +20,7 @@ const {
   occupyingBookingFilter,
 } = require("../utils/unitAvailability");
 const { cancelUnpaidBookings } = require("../utils/bookingHold");
+const { sendSeriesDecisionEmail } = require("../utils/bookingNotifications");
 const {
   calculateDailyPriceWithBreakdown,
   calculateHourlyPriceWithBreakdown,
@@ -114,6 +115,440 @@ const uploadPdf = multer({
   },
 });
 
+// Validates, prices and saves one booking. Returns { status, body }: body is
+// the saved booking on success, or { error }. POST / and POST /group share
+// it, so a series gets exactly the same checks and pricing as one booking.
+// With dryRun the booking is fully checked and priced but not saved.
+async function createBooking({
+  guestId,
+  propertyId,
+  checkIn,
+  checkOut,
+  guests,
+  pricingUnit,
+  extras,
+  licensePdfUrl,
+  groupId,
+  dryRun,
+}) {
+  // The checks below were written inside the route handler; this stand-in
+  // turns each `return res.status(code).json(body)` into { status, body }.
+  const res = { status: (status) => ({ json: (body) => ({ status, body }) }) };
+
+  // 1. Find property
+  const property = await Property.findOne({ _id: propertyId }).populate(
+    "host"
+  );
+  if (!property) {
+    return res
+      .status(404)
+      .json({ error: "Property not found or unavailable" });
+  }
+
+  // 2. Parse and validate dates
+  const checkInDate = new Date(checkIn);
+  const checkOutDate = new Date(checkOut);
+
+  if (isNaN(checkInDate) || isNaN(checkOutDate)) {
+    return res.status(400).json({ error: "Invalid date format" });
+  }
+  if (checkOutDate < checkInDate) {
+    return res
+      .status(400)
+      .json({ error: "Check-out must be after check-in" });
+  }
+  if (checkOutDate < new Date()) {
+    return res.status(400).json({ error: "Cannot book in the past" });
+  }
+
+  // A guest who went Back from checkout and is retrying the same dates
+  // shouldn't be blocked by their own unfinished attempt -- cancel it.
+  // Only attempts with no payment taken or card authorised yet.
+  await cancelUnpaidBookings(
+    { guest: guestId, property: property._id, checkIn: { $lt: checkOutDate }, checkOut: { $gt: checkInDate } },
+    "guest"
+  );
+
+  // 3/4. Prevent double booking -- checks both existing bookings and
+  // host-blocked dates together, accounting for Property.unitsCount
+  // (identical bookable units, e.g. 5 chairs on one listing) so up to
+  // unitsCount overlapping bookings can coexist instead of only 1.
+  const occupancy = await getUnitOccupancy(property, checkInDate, checkOutDate);
+  if (isFullyBooked(occupancy, property.unitsCount)) {
+    return res.status(409).json({ error: "These dates are unavailable" });
+  }
+  const assignedUnit = pickAvailableUnit(occupancy, property.unitsCount);
+
+  // 5. Check availability setting
+  if (property.availability && property.availability !== "all") {
+    const days = [];
+    const cursor = new Date(checkInDate);
+    while (cursor < checkOutDate) {
+      days.push(cursor.getDay());
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    if (property.availability === "weekdays") {
+      const hasWeekend = days.some((d) => d === 0 || d === 6);
+      if (hasWeekend) {
+        return res
+          .status(409)
+          .json({ error: "This space is only available on weekdays" });
+      }
+    }
+    if (property.availability === "weekends") {
+      const hasWeekday = days.some((d) => d >= 1 && d <= 5);
+      if (hasWeekday) {
+        return res
+          .status(409)
+          .json({ error: "This space is only available on weekends" });
+      }
+    }
+  }
+
+  // 5b. Check open days — if host has set specific days,
+  // all booking days must be within those days
+  const availOpenDays = property.availability?.openDays || [];
+  if (availOpenDays.length > 0) {
+    const DAY_MAP = {
+      sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+      thursday: 4, friday: 5, saturday: 6,
+    };
+    const allowedDayNumbers = availOpenDays.map(
+      (d) => DAY_MAP[d.toLowerCase()]
+    ).filter((d) => d !== undefined);
+
+    if (allowedDayNumbers.length > 0) {
+      const bookedDays = [];
+      const cur = new Date(checkInDate);
+      while (cur < checkOutDate) {
+        bookedDays.push(cur.getDay());
+        cur.setDate(cur.getDate() + 1);
+      }
+      const hasClosedDay = bookedDays.some(
+        (d) => !allowedDayNumbers.includes(d)
+      );
+      if (hasClosedDay) {
+        return res.status(409).json({
+          error: "One or more selected days are outside the space's open days",
+        });
+      }
+    }
+  }
+
+  // Resolve daily/hourly price and which duration type this booking
+  // actually is. Needed here (not just for pricing below) because the
+  // open-hours check right after this must only ever apply to HOURLY
+  // bookings -- a per-day/week/month/year booking isn't tied to a
+  // single hour-of-day window, so it should never be blocked by one.
+  const dailyPrice = Number(property.pricing.weekdayPrice) ||
+                     Number(property.pricing.daily) || 0;
+  const hourlyPrice = Number(property.pricing.hourlyPrice) ||
+                      Number(property.pricing.hourly) || 0;
+
+  // Use explicit pricingUnit from frontend if provided,
+  // otherwise fall back to auto-detection
+  const effectivePricingType = (() => {
+    if (pricingUnit === "hour") return "HOURLY";
+    if (pricingUnit === "day") return "DAILY";
+    if (pricingUnit === "week") return "WEEKLY";
+    if (pricingUnit === "month") return "MONTHLY";
+    if (pricingUnit === "year") return "ANNUAL";
+    // Fallback: auto-detect from property pricing config
+    if (property.pricing.pricingType === "HOURLY") return "HOURLY";
+    if (property.pricing.pricingType === "DAILY") {
+      return dailyPrice > 0 ? "DAILY" : hourlyPrice > 0 ? "HOURLY" : "DAILY";
+    }
+    if (dailyPrice > 0) return "DAILY";
+    if (hourlyPrice > 0) return "HOURLY";
+    return "DAILY";
+  })();
+
+  // 5c. Check open hours — only applies to HOURLY bookings. Daily,
+  // weekly, monthly, and annual bookings are for the full day(s)
+  // selected and must not be blocked by a listing's hour-of-day
+  // opening window (that only makes sense for hourly slots).
+  // Resolves per-day-of-week hours when the listing uses custom hours
+  // (availability.hoursMode === "custom") -- the flat openTime/closeTime
+  // above stay empty in that mode, so reading them directly here used to
+  // silently skip this check entirely for those listings.
+  const dayWindow = resolveDayHours(checkInDate, property.availability);
+
+  if (effectivePricingType === "HOURLY" && dayWindow && dayWindow.openTime && dayWindow.closeTime) {
+    const { openTime, closeTime } = dayWindow;
+    const [openH, openM] = openTime.split(":").map(Number);
+    const [closeH, closeM] = closeTime.split(":").map(Number);
+
+    const checkInH = checkInDate.getUTCHours();
+    const checkInMin = checkInDate.getUTCMinutes();
+    const checkOutH = checkOutDate.getUTCHours();
+    const checkOutMin = checkOutDate.getUTCMinutes();
+
+    const checkInMinutes = checkInH * 60 + checkInMin;
+    const checkOutMinutes = checkOutH * 60 + checkOutMin;
+    const openMinutes = openH * 60 + openM;
+    const closeMinutes = closeH * 60 + closeM;
+
+    if (checkInMinutes < openMinutes || checkOutMinutes > closeMinutes) {
+      return res.status(409).json({
+        error: `This space is only available between ${openTime} and ${closeTime}`,
+      });
+    }
+  }
+
+  // 6. Calculate total price
+  let totalPrice = 0;
+  let totalNights = 0;
+  let totalHours = 0;
+  let totalUnits = 0;
+  let priceBreakdown = [];
+
+  const pricingType = property.pricing.pricingType || "DAILY";
+  // dailyPrice, hourlyPrice, and effectivePricingType are already
+  // resolved above (needed early for the open-hours gate in 5c).
+
+  const diffMs = checkOutDate - checkInDate;
+  const diffHours = diffMs / (1000 * 60 * 60);
+
+  const weeklyPrice = Number(property.pricing.weekly) || 0;
+  const monthlyPrice = Number(property.pricing.monthly) || 0;
+  const annualPrice = Number(property.pricing.annual) || 0;
+
+  if (effectivePricingType === "HOURLY") {
+    if (diffHours < 1) {
+      return res.status(400).json({ error: "Minimum 1 hour required" });
+    }
+    if (hourlyPrice <= 0) {
+      return res.status(400).json({ error: "Hourly price not configured for this space" });
+    }
+    totalHours = Math.ceil(diffHours * 10) / 10;
+    totalUnits = totalHours;
+    {
+      const hourlyResult = calculateHourlyPriceWithBreakdown(
+        checkInDate,
+        totalHours,
+        hourlyPrice,
+        property.pricing.customDayPricing
+      );
+      totalPrice = hourlyResult.totalPrice;
+      priceBreakdown = hourlyResult.breakdown;
+    }
+
+  } else if (effectivePricingType === "DAILY") {
+    if (dailyPrice <= 0) {
+      return res.status(400).json({ error: "Daily price not configured for this space" });
+    }
+    // Count calendar days (date difference only, ignore time)
+    const checkInDay = new Date(checkInDate.getFullYear(), checkInDate.getMonth(), checkInDate.getDate());
+    const checkOutDay = new Date(checkOutDate.getFullYear(), checkOutDate.getMonth(), checkOutDate.getDate());
+    const calendarDays = Math.round((checkOutDay - checkInDay) / (1000 * 60 * 60 * 24));
+    if (property.bookingSettings?.singleDayOnly && calendarDays > 1) {
+      return res.status(400).json({
+        error: "This space only accepts single-day bookings — please select one calendar day",
+      });
+    }
+    totalNights = Math.max(1, calendarDays);
+    totalUnits = totalNights;
+    {
+      const dailyResult = calculateDailyPriceWithBreakdown(
+        checkInDate,
+        totalNights,
+        dailyPrice,
+        property.pricing.customDayPricing
+      );
+      totalPrice = dailyResult.totalPrice;
+      priceBreakdown = dailyResult.breakdown;
+    }
+
+  } else if (effectivePricingType === "WEEKLY") {
+    if (weeklyPrice <= 0) {
+      return res.status(400).json({ error: "Weekly price not configured for this space" });
+    }
+    const checkInDay = new Date(checkInDate.getFullYear(), checkInDate.getMonth(), checkInDate.getDate());
+    const checkOutDay = new Date(checkOutDate.getFullYear(), checkOutDate.getMonth(), checkOutDate.getDate());
+    const calendarDays = Math.round((checkOutDay - checkInDay) / (1000 * 60 * 60 * 24));
+    totalUnits = Math.max(1, Math.ceil(calendarDays / 7));
+    const graduated = property.pricing.graduatedWeekly;
+    if (graduated?.enabled && graduated.thresholdWeeks > 0 && totalUnits > graduated.thresholdWeeks) {
+      const weeksAtBase = graduated.thresholdWeeks;
+      const weeksAtSteppedRate = totalUnits - graduated.thresholdWeeks;
+      totalPrice = weeksAtBase * weeklyPrice + weeksAtSteppedRate * (graduated.rateAfterThreshold || weeklyPrice);
+    } else {
+      totalPrice = totalUnits * weeklyPrice;
+    }
+
+  } else if (effectivePricingType === "MONTHLY") {
+    if (monthlyPrice <= 0) {
+      return res.status(400).json({ error: "Monthly price not configured for this space" });
+    }
+    const checkInDay = new Date(checkInDate.getFullYear(), checkInDate.getMonth(), checkInDate.getDate());
+    const checkOutDay = new Date(checkOutDate.getFullYear(), checkOutDate.getMonth(), checkOutDate.getDate());
+    const calendarDays = Math.round((checkOutDay - checkInDay) / (1000 * 60 * 60 * 24));
+    totalUnits = Math.max(1, Math.ceil(calendarDays / 31));
+    totalPrice = totalUnits * monthlyPrice;
+
+  } else if (effectivePricingType === "ANNUAL") {
+    if (annualPrice <= 0) {
+      return res.status(400).json({ error: "Annual price not configured for this space" });
+    }
+    const checkInDay = new Date(checkInDate.getFullYear(), checkInDate.getMonth(), checkInDate.getDate());
+    const checkOutDay = new Date(checkOutDate.getFullYear(), checkOutDate.getMonth(), checkOutDate.getDate());
+    const calendarDays = Math.round((checkOutDay - checkInDay) / (1000 * 60 * 60 * 24));
+    totalUnits = Math.max(1, Math.ceil(calendarDays / 366));
+    totalPrice = totalUnits * annualPrice;
+
+  } else {
+    return res.status(400).json({ error: "Invalid pricing type" });
+  }
+
+  // 7. Add extras
+  const validExtras = Array.isArray(property.extras) ? property.extras : [];
+  const selectedExtras = validExtras.filter((e) => extras.includes(e.name));
+  const extrasTotal = selectedExtras.reduce(
+    (sum, e) => sum + (Number(e.price) || 0),
+    0
+  );
+  totalPrice += extrasTotal;
+
+  // 8. Apply discounts
+  let discount = 0;
+  if (property.pricing.pricingType === "DAILY") {
+    if (property.pricing.discounts?.newListing)
+      discount += totalPrice * 0.2;
+    // "Booking within a few days of arrival" -- 48h is the common
+    // last-minute-deal threshold and matches the discount's own copy
+    // in CreateSpace.jsx/EditSpace.jsx ("within a few days of arrival").
+    const hoursUntilCheckIn = (checkInDate - new Date()) / (1000 * 60 * 60);
+    if (hoursUntilCheckIn <= 48 && property.pricing.discounts?.lastMinute)
+      discount += totalPrice * 0.01;
+    if (totalNights >= 7 && property.pricing.discounts?.weekly)
+      discount += totalPrice * 0.1;
+    if (totalNights >= 30 && property.pricing.discounts?.monthly)
+      discount += totalPrice * 0.2;
+  }
+  // Extended Hours Discount -- HOURLY bookings only, host sets their own
+  // rate (0 = disabled), applies once a single booking exceeds 3 hours.
+  if (effectivePricingType === "HOURLY" && totalHours > 3) {
+    const extendedHoursRate = Number(property.pricing.discounts?.extendedHours) || 0;
+    if (extendedHoursRate > 0) {
+      discount += totalPrice * (extendedHoursRate / 100);
+    }
+  }
+  totalPrice = Math.round((totalPrice - discount) * 100) / 100;
+  if (isNaN(totalPrice) || totalPrice < 0) totalPrice = 0;
+
+  // Commission rate: fixed for ANNUAL/MONTHLY, otherwise the platform
+  // default unless the property's market has an active override — see
+  // utils/commission.js and the admin Commission Settings page.
+  const commissionRate = await resolveCommissionRate(effectivePricingType, property);
+
+  const platformFee = Math.round(totalPrice * commissionRate * 100) / 100;
+  const hostAmount = Math.round((totalPrice - platformFee) * 100) / 100;
+
+  // 9. Create booking
+  const isInstantBook = Boolean(property.bookingSettings?.instantBook);
+  // Only pending bookings need a host decision, so only they get a
+  // token -- lets the "New booking request" email carry one-click
+  // Approve/Decline links (see /:id/quick-action below) without the
+  // host having to log in first.
+  const hostActionToken = isInstantBook ? undefined : randomUUID();
+  const booking = new Booking({
+    property: propertyId,
+    guest: guestId,
+    host: property.host._id,
+    checkIn: checkInDate,
+    checkOut: checkOutDate,
+    unitIndex: assignedUnit,
+    guests: guests || 1,
+    extras: selectedExtras,
+    totalPrice,
+    platformFee,
+    hostAmount,
+    // Optional security deposit, charged alongside rent as a second
+    // Stripe Checkout line item (see routes/payments.js) but kept
+    // entirely separate from totalPrice/platformFee/hostAmount above --
+    // it must never factor into commission or the rent escrow-release
+    // transfer, only into the host's wallet (see HostWallet).
+    deposit: {
+      // Legacy deposit is off while payments v2 is on -- v2 handles the
+      // deposit itself (card hold / charged), never inside the rent charge.
+      amount: !isPaymentsV2Enabled() && property.deposit?.enabled ? property.deposit.amount : 0,
+      status: "none",
+    },
+    discountApplied: Math.round(discount * 100) / 100,
+    // Gated on effectivePricingType (what this booking actually used),
+    // not property.pricing.pricingType (the property's single default
+    // tier) -- a property can have multiple pricing tiers enabled, so
+    // those can differ, and using the wrong one silently dropped
+    // totalNights/totalHours for any booking made on a non-default tier.
+    totalNights:
+      effectivePricingType === "DAILY" ? totalNights : undefined,
+    totalHours:
+      effectivePricingType === "HOURLY"
+        ? Number(totalHours.toFixed(2))
+        : undefined,
+    pricingUnit: pricingUnit || (
+      {
+        HOURLY: "hour",
+        DAILY: "day",
+        WEEKLY: "week",
+        MONTHLY: "month",
+        ANNUAL: "year",
+      }[effectivePricingType]
+    ),
+    totalUnits,
+    // Only HOURLY/DAILY populate this (see calculation above) --
+    // WEEKLY/MONTHLY/ANNUAL bookings span all 7 days regardless of
+    // start day, so day-of-week variance isn't meaningful for them.
+    priceBreakdown,
+    // Snapshot the exact terms text the customer agreed to (validated
+    // above), plus when -- guest identity is already captured via the
+    // `guest` field above, so together this is a permanent record of
+    // what was agreed to, when, and by whom.
+    listingTermsSnapshot: property.listingTerms?.trim() || undefined,
+    listingTermsAgreedAt: property.listingTerms?.trim() ? new Date() : undefined,
+    status: isInstantBook ? "confirmed" : "pending",
+    ...(isInstantBook && { instantBook: true }),
+    licensePdfUrl,
+    ...(hostActionToken && {
+      hostActionToken,
+      hostActionTokenExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    }),
+  });
+
+  if (groupId) booking.groupId = groupId;
+  if (dryRun) return { status: 200, body: booking };
+  await booking.save();
+  await booking.populate(["guest", "property", "host"]);
+
+  // 10. Block dates if instantly confirmed
+  if (booking.status === "confirmed") {
+    await Property.findByIdAndUpdate(propertyId, {
+      $push: {
+        blockedDates: {
+          start: checkInDate,
+          end: checkOutDate,
+          reason: "booked",
+          bookingId: booking._id,
+          unitIndex: booking.unitIndex,
+        },
+      },
+    });
+
+    // Push instant-book confirmations straight to the host's connected
+    // Google/Outlook calendar, same as a request-to-book approval does.
+    pushBookingToHostCalendars(booking, property).catch((err) =>
+      console.error(`Calendar push failed for booking ${booking._id}:`, err.message)
+    );
+  }
+
+  // Guest+host notifications (in-app, email, SMS) now fire from
+  // routes/paymentsWebhook.js once checkout actually completes --
+  // moved out of here so a request that never gets paid for doesn't
+  // notify anyone about it. See utils/bookingNotifications.js.
+
+  return res.status(201).json(booking);
+}
+
 router.post(
   "/",
   auth,
@@ -179,416 +614,17 @@ router.post(
     }
 
     try {
-      // 1. Find property
-      const property = await Property.findOne({ _id: propertyId }).populate(
-        "host"
-      );
-      if (!property) {
-        return res
-          .status(404)
-          .json({ error: "Property not found or unavailable" });
-      }
-
-      // 2. Parse and validate dates
-      const checkInDate = new Date(checkIn);
-      const checkOutDate = new Date(checkOut);
-
-      if (isNaN(checkInDate) || isNaN(checkOutDate)) {
-        return res.status(400).json({ error: "Invalid date format" });
-      }
-      if (checkOutDate < checkInDate) {
-        return res
-          .status(400)
-          .json({ error: "Check-out must be after check-in" });
-      }
-      if (checkOutDate < new Date()) {
-        return res.status(400).json({ error: "Cannot book in the past" });
-      }
-
-      // A guest who went Back from checkout and is retrying the same dates
-      // shouldn't be blocked by their own unfinished attempt -- cancel it.
-      // Only attempts with no payment taken or card authorised yet.
-      await cancelUnpaidBookings(
-        { guest: guestId, property: property._id, checkIn: { $lt: checkOutDate }, checkOut: { $gt: checkInDate } },
-        "guest"
-      );
-
-      // 3/4. Prevent double booking -- checks both existing bookings and
-      // host-blocked dates together, accounting for Property.unitsCount
-      // (identical bookable units, e.g. 5 chairs on one listing) so up to
-      // unitsCount overlapping bookings can coexist instead of only 1.
-      const occupancy = await getUnitOccupancy(property, checkInDate, checkOutDate);
-      if (isFullyBooked(occupancy, property.unitsCount)) {
-        return res.status(409).json({ error: "These dates are unavailable" });
-      }
-      const assignedUnit = pickAvailableUnit(occupancy, property.unitsCount);
-
-      // 5. Check availability setting
-      if (property.availability && property.availability !== "all") {
-        const days = [];
-        const cursor = new Date(checkInDate);
-        while (cursor < checkOutDate) {
-          days.push(cursor.getDay());
-          cursor.setDate(cursor.getDate() + 1);
-        }
-        if (property.availability === "weekdays") {
-          const hasWeekend = days.some((d) => d === 0 || d === 6);
-          if (hasWeekend) {
-            return res
-              .status(409)
-              .json({ error: "This space is only available on weekdays" });
-          }
-        }
-        if (property.availability === "weekends") {
-          const hasWeekday = days.some((d) => d >= 1 && d <= 5);
-          if (hasWeekday) {
-            return res
-              .status(409)
-              .json({ error: "This space is only available on weekends" });
-          }
-        }
-      }
-
-      // 5b. Check open days — if host has set specific days,
-      // all booking days must be within those days
-      const availOpenDays = property.availability?.openDays || [];
-      if (availOpenDays.length > 0) {
-        const DAY_MAP = {
-          sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
-          thursday: 4, friday: 5, saturday: 6,
-        };
-        const allowedDayNumbers = availOpenDays.map(
-          (d) => DAY_MAP[d.toLowerCase()]
-        ).filter((d) => d !== undefined);
-
-        if (allowedDayNumbers.length > 0) {
-          const bookedDays = [];
-          const cur = new Date(checkInDate);
-          while (cur < checkOutDate) {
-            bookedDays.push(cur.getDay());
-            cur.setDate(cur.getDate() + 1);
-          }
-          const hasClosedDay = bookedDays.some(
-            (d) => !allowedDayNumbers.includes(d)
-          );
-          if (hasClosedDay) {
-            return res.status(409).json({
-              error: "One or more selected days are outside the space's open days",
-            });
-          }
-        }
-      }
-
-      // Resolve daily/hourly price and which duration type this booking
-      // actually is. Needed here (not just for pricing below) because the
-      // open-hours check right after this must only ever apply to HOURLY
-      // bookings -- a per-day/week/month/year booking isn't tied to a
-      // single hour-of-day window, so it should never be blocked by one.
-      const dailyPrice = Number(property.pricing.weekdayPrice) ||
-                         Number(property.pricing.daily) || 0;
-      const hourlyPrice = Number(property.pricing.hourlyPrice) ||
-                          Number(property.pricing.hourly) || 0;
-
-      // Use explicit pricingUnit from frontend if provided,
-      // otherwise fall back to auto-detection
-      const effectivePricingType = (() => {
-        if (pricingUnit === "hour") return "HOURLY";
-        if (pricingUnit === "day") return "DAILY";
-        if (pricingUnit === "week") return "WEEKLY";
-        if (pricingUnit === "month") return "MONTHLY";
-        if (pricingUnit === "year") return "ANNUAL";
-        // Fallback: auto-detect from property pricing config
-        if (property.pricing.pricingType === "HOURLY") return "HOURLY";
-        if (property.pricing.pricingType === "DAILY") {
-          return dailyPrice > 0 ? "DAILY" : hourlyPrice > 0 ? "HOURLY" : "DAILY";
-        }
-        if (dailyPrice > 0) return "DAILY";
-        if (hourlyPrice > 0) return "HOURLY";
-        return "DAILY";
-      })();
-
-      // 5c. Check open hours — only applies to HOURLY bookings. Daily,
-      // weekly, monthly, and annual bookings are for the full day(s)
-      // selected and must not be blocked by a listing's hour-of-day
-      // opening window (that only makes sense for hourly slots).
-      // Resolves per-day-of-week hours when the listing uses custom hours
-      // (availability.hoursMode === "custom") -- the flat openTime/closeTime
-      // above stay empty in that mode, so reading them directly here used to
-      // silently skip this check entirely for those listings.
-      const dayWindow = resolveDayHours(checkInDate, property.availability);
-
-      if (effectivePricingType === "HOURLY" && dayWindow && dayWindow.openTime && dayWindow.closeTime) {
-        const { openTime, closeTime } = dayWindow;
-        const [openH, openM] = openTime.split(":").map(Number);
-        const [closeH, closeM] = closeTime.split(":").map(Number);
-
-        const checkInH = checkInDate.getUTCHours();
-        const checkInMin = checkInDate.getUTCMinutes();
-        const checkOutH = checkOutDate.getUTCHours();
-        const checkOutMin = checkOutDate.getUTCMinutes();
-
-        const checkInMinutes = checkInH * 60 + checkInMin;
-        const checkOutMinutes = checkOutH * 60 + checkOutMin;
-        const openMinutes = openH * 60 + openM;
-        const closeMinutes = closeH * 60 + closeM;
-
-        if (checkInMinutes < openMinutes || checkOutMinutes > closeMinutes) {
-          return res.status(409).json({
-            error: `This space is only available between ${openTime} and ${closeTime}`,
-          });
-        }
-      }
-
-      // 6. Calculate total price
-      let totalPrice = 0;
-      let totalNights = 0;
-      let totalHours = 0;
-      let totalUnits = 0;
-      let priceBreakdown = [];
-
-      const pricingType = property.pricing.pricingType || "DAILY";
-      // dailyPrice, hourlyPrice, and effectivePricingType are already
-      // resolved above (needed early for the open-hours gate in 5c).
-
-      const diffMs = checkOutDate - checkInDate;
-      const diffHours = diffMs / (1000 * 60 * 60);
-
-      const weeklyPrice = Number(property.pricing.weekly) || 0;
-      const monthlyPrice = Number(property.pricing.monthly) || 0;
-      const annualPrice = Number(property.pricing.annual) || 0;
-
-      if (effectivePricingType === "HOURLY") {
-        if (diffHours < 1) {
-          return res.status(400).json({ error: "Minimum 1 hour required" });
-        }
-        if (hourlyPrice <= 0) {
-          return res.status(400).json({ error: "Hourly price not configured for this space" });
-        }
-        totalHours = Math.ceil(diffHours * 10) / 10;
-        totalUnits = totalHours;
-        {
-          const hourlyResult = calculateHourlyPriceWithBreakdown(
-            checkInDate,
-            totalHours,
-            hourlyPrice,
-            property.pricing.customDayPricing
-          );
-          totalPrice = hourlyResult.totalPrice;
-          priceBreakdown = hourlyResult.breakdown;
-        }
-
-      } else if (effectivePricingType === "DAILY") {
-        if (dailyPrice <= 0) {
-          return res.status(400).json({ error: "Daily price not configured for this space" });
-        }
-        // Count calendar days (date difference only, ignore time)
-        const checkInDay = new Date(checkInDate.getFullYear(), checkInDate.getMonth(), checkInDate.getDate());
-        const checkOutDay = new Date(checkOutDate.getFullYear(), checkOutDate.getMonth(), checkOutDate.getDate());
-        const calendarDays = Math.round((checkOutDay - checkInDay) / (1000 * 60 * 60 * 24));
-        if (property.bookingSettings?.singleDayOnly && calendarDays > 1) {
-          return res.status(400).json({
-            error: "This space only accepts single-day bookings — please select one calendar day",
-          });
-        }
-        totalNights = Math.max(1, calendarDays);
-        totalUnits = totalNights;
-        {
-          const dailyResult = calculateDailyPriceWithBreakdown(
-            checkInDate,
-            totalNights,
-            dailyPrice,
-            property.pricing.customDayPricing
-          );
-          totalPrice = dailyResult.totalPrice;
-          priceBreakdown = dailyResult.breakdown;
-        }
-
-      } else if (effectivePricingType === "WEEKLY") {
-        if (weeklyPrice <= 0) {
-          return res.status(400).json({ error: "Weekly price not configured for this space" });
-        }
-        const checkInDay = new Date(checkInDate.getFullYear(), checkInDate.getMonth(), checkInDate.getDate());
-        const checkOutDay = new Date(checkOutDate.getFullYear(), checkOutDate.getMonth(), checkOutDate.getDate());
-        const calendarDays = Math.round((checkOutDay - checkInDay) / (1000 * 60 * 60 * 24));
-        totalUnits = Math.max(1, Math.ceil(calendarDays / 7));
-        const graduated = property.pricing.graduatedWeekly;
-        if (graduated?.enabled && graduated.thresholdWeeks > 0 && totalUnits > graduated.thresholdWeeks) {
-          const weeksAtBase = graduated.thresholdWeeks;
-          const weeksAtSteppedRate = totalUnits - graduated.thresholdWeeks;
-          totalPrice = weeksAtBase * weeklyPrice + weeksAtSteppedRate * (graduated.rateAfterThreshold || weeklyPrice);
-        } else {
-          totalPrice = totalUnits * weeklyPrice;
-        }
-
-      } else if (effectivePricingType === "MONTHLY") {
-        if (monthlyPrice <= 0) {
-          return res.status(400).json({ error: "Monthly price not configured for this space" });
-        }
-        const checkInDay = new Date(checkInDate.getFullYear(), checkInDate.getMonth(), checkInDate.getDate());
-        const checkOutDay = new Date(checkOutDate.getFullYear(), checkOutDate.getMonth(), checkOutDate.getDate());
-        const calendarDays = Math.round((checkOutDay - checkInDay) / (1000 * 60 * 60 * 24));
-        totalUnits = Math.max(1, Math.ceil(calendarDays / 31));
-        totalPrice = totalUnits * monthlyPrice;
-
-      } else if (effectivePricingType === "ANNUAL") {
-        if (annualPrice <= 0) {
-          return res.status(400).json({ error: "Annual price not configured for this space" });
-        }
-        const checkInDay = new Date(checkInDate.getFullYear(), checkInDate.getMonth(), checkInDate.getDate());
-        const checkOutDay = new Date(checkOutDate.getFullYear(), checkOutDate.getMonth(), checkOutDate.getDate());
-        const calendarDays = Math.round((checkOutDay - checkInDay) / (1000 * 60 * 60 * 24));
-        totalUnits = Math.max(1, Math.ceil(calendarDays / 366));
-        totalPrice = totalUnits * annualPrice;
-
-      } else {
-        return res.status(400).json({ error: "Invalid pricing type" });
-      }
-
-      // 7. Add extras
-      const validExtras = Array.isArray(property.extras) ? property.extras : [];
-      const selectedExtras = validExtras.filter((e) => extras.includes(e.name));
-      const extrasTotal = selectedExtras.reduce(
-        (sum, e) => sum + (Number(e.price) || 0),
-        0
-      );
-      totalPrice += extrasTotal;
-
-      // 8. Apply discounts
-      let discount = 0;
-      if (property.pricing.pricingType === "DAILY") {
-        if (property.pricing.discounts?.newListing)
-          discount += totalPrice * 0.2;
-        // "Booking within a few days of arrival" -- 48h is the common
-        // last-minute-deal threshold and matches the discount's own copy
-        // in CreateSpace.jsx/EditSpace.jsx ("within a few days of arrival").
-        const hoursUntilCheckIn = (checkInDate - new Date()) / (1000 * 60 * 60);
-        if (hoursUntilCheckIn <= 48 && property.pricing.discounts?.lastMinute)
-          discount += totalPrice * 0.01;
-        if (totalNights >= 7 && property.pricing.discounts?.weekly)
-          discount += totalPrice * 0.1;
-        if (totalNights >= 30 && property.pricing.discounts?.monthly)
-          discount += totalPrice * 0.2;
-      }
-      // Extended Hours Discount -- HOURLY bookings only, host sets their own
-      // rate (0 = disabled), applies once a single booking exceeds 3 hours.
-      if (effectivePricingType === "HOURLY" && totalHours > 3) {
-        const extendedHoursRate = Number(property.pricing.discounts?.extendedHours) || 0;
-        if (extendedHoursRate > 0) {
-          discount += totalPrice * (extendedHoursRate / 100);
-        }
-      }
-      totalPrice = Math.round((totalPrice - discount) * 100) / 100;
-      if (isNaN(totalPrice) || totalPrice < 0) totalPrice = 0;
-
-      // Commission rate: fixed for ANNUAL/MONTHLY, otherwise the platform
-      // default unless the property's market has an active override — see
-      // utils/commission.js and the admin Commission Settings page.
-      const commissionRate = await resolveCommissionRate(effectivePricingType, property);
-
-      const platformFee = Math.round(totalPrice * commissionRate * 100) / 100;
-      const hostAmount = Math.round((totalPrice - platformFee) * 100) / 100;
-
-      // 9. Create booking
-      const isInstantBook = Boolean(property.bookingSettings?.instantBook);
-      // Only pending bookings need a host decision, so only they get a
-      // token -- lets the "New booking request" email carry one-click
-      // Approve/Decline links (see /:id/quick-action below) without the
-      // host having to log in first.
-      const hostActionToken = isInstantBook ? undefined : randomUUID();
-      const booking = new Booking({
-        property: propertyId,
-        guest: guestId,
-        host: property.host._id,
-        checkIn: checkInDate,
-        checkOut: checkOutDate,
-        unitIndex: assignedUnit,
-        guests: guests || 1,
-        extras: selectedExtras,
-        totalPrice,
-        platformFee,
-        hostAmount,
-        // Optional security deposit, charged alongside rent as a second
-        // Stripe Checkout line item (see routes/payments.js) but kept
-        // entirely separate from totalPrice/platformFee/hostAmount above --
-        // it must never factor into commission or the rent escrow-release
-        // transfer, only into the host's wallet (see HostWallet).
-        deposit: {
-          // Legacy deposit is off while payments v2 is on -- v2 handles the
-          // deposit itself (card hold / charged), never inside the rent charge.
-          amount: !isPaymentsV2Enabled() && property.deposit?.enabled ? property.deposit.amount : 0,
-          status: "none",
-        },
-        discountApplied: Math.round(discount * 100) / 100,
-        // Gated on effectivePricingType (what this booking actually used),
-        // not property.pricing.pricingType (the property's single default
-        // tier) -- a property can have multiple pricing tiers enabled, so
-        // those can differ, and using the wrong one silently dropped
-        // totalNights/totalHours for any booking made on a non-default tier.
-        totalNights:
-          effectivePricingType === "DAILY" ? totalNights : undefined,
-        totalHours:
-          effectivePricingType === "HOURLY"
-            ? Number(totalHours.toFixed(2))
-            : undefined,
-        pricingUnit: pricingUnit || (
-          {
-            HOURLY: "hour",
-            DAILY: "day",
-            WEEKLY: "week",
-            MONTHLY: "month",
-            ANNUAL: "year",
-          }[effectivePricingType]
-        ),
-        totalUnits,
-        // Only HOURLY/DAILY populate this (see calculation above) --
-        // WEEKLY/MONTHLY/ANNUAL bookings span all 7 days regardless of
-        // start day, so day-of-week variance isn't meaningful for them.
-        priceBreakdown,
-        // Snapshot the exact terms text the customer agreed to (validated
-        // above), plus when -- guest identity is already captured via the
-        // `guest` field above, so together this is a permanent record of
-        // what was agreed to, when, and by whom.
-        listingTermsSnapshot: property.listingTerms?.trim() || undefined,
-        listingTermsAgreedAt: property.listingTerms?.trim() ? new Date() : undefined,
-        status: isInstantBook ? "confirmed" : "pending",
-        ...(isInstantBook && { instantBook: true }),
+      const result = await createBooking({
+        guestId,
+        propertyId,
+        checkIn,
+        checkOut,
+        guests,
+        pricingUnit,
+        extras,
         licensePdfUrl,
-        ...(hostActionToken && {
-          hostActionToken,
-          hostActionTokenExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        }),
       });
-
-      await booking.save();
-      await booking.populate(["guest", "property", "host"]);
-
-      // 10. Block dates if instantly confirmed
-      if (booking.status === "confirmed") {
-        await Property.findByIdAndUpdate(propertyId, {
-          $push: {
-            blockedDates: {
-              start: checkInDate,
-              end: checkOutDate,
-              reason: "booked",
-              bookingId: booking._id,
-              unitIndex: booking.unitIndex,
-            },
-          },
-        });
-
-        // Push instant-book confirmations straight to the host's connected
-        // Google/Outlook calendar, same as a request-to-book approval does.
-        pushBookingToHostCalendars(booking, property).catch((err) =>
-          console.error(`Calendar push failed for booking ${booking._id}:`, err.message)
-        );
-      }
-
-      // Guest+host notifications (in-app, email, SMS) now fire from
-      // routes/paymentsWebhook.js once checkout actually completes --
-      // moved out of here so a request that never gets paid for doesn't
-      // notify anyone about it. See utils/bookingNotifications.js.
-
-      return res.status(201).json(booking);
+      return res.status(result.status).json(result.body);
     } catch (err) {
       if (req.file && fs.existsSync(req.file.path))
         fs.unlinkSync(req.file.path);
@@ -597,6 +633,80 @@ router.post(
     }
   }
 );
+
+// Recurring / Multiple Dates: every date is checked before any is saved, so a
+// guest never ends up with only some of their dates booked. The bookings
+// share a groupId and are paid for together (POST /group/:groupId/payment-
+// intent in routes/paymentsV2.js).
+const MAX_SERIES_DATES = 52;
+const seriesDateLabel = (date) =>
+  new Date(date).toLocaleString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/London",
+  });
+
+router.post("/group", auth, async (req, res) => {
+  const { propertyId, dates, guests, pricingUnit, agreedToTerms } = req.body;
+  const guestId = req.user.id;
+
+  if (!Array.isArray(dates) || dates.length < 2 || dates.length > MAX_SERIES_DATES) {
+    return res.status(400).json({ error: `A series needs between 2 and ${MAX_SERIES_DATES} dates.` });
+  }
+  const ranges = dates
+    .map((d) => ({ checkIn: new Date(d?.checkIn), checkOut: new Date(d?.checkOut) }))
+    .sort((a, b) => a.checkIn - b.checkIn);
+  if (ranges.some((r) => isNaN(r.checkIn) || isNaN(r.checkOut))) {
+    return res.status(400).json({ error: "Invalid date format" });
+  }
+  for (let i = 1; i < ranges.length; i += 1) {
+    if (ranges[i].checkIn < ranges[i - 1].checkOut) {
+      return res.status(400).json({ error: `${seriesDateLabel(ranges[i].checkIn)} overlaps another date in this series.` });
+    }
+  }
+
+  let groupId;
+  try {
+    const property = await Property.findById(propertyId).select("listingTerms");
+    if (!property) return res.status(404).json({ error: "Property not found or unavailable" });
+    if (property.listingTerms?.trim() && String(agreedToTerms) !== "true") {
+      return res.status(400).json({ error: "You must agree to the host's listing terms before booking." });
+    }
+
+    const base = { guestId, propertyId, guests, pricingUnit, extras: [] };
+    const failed = (range, result) =>
+      res.status(result.status).json({
+        error: `${seriesDateLabel(range.checkIn)}: ${result.body.error}`,
+        failedDate: range.checkIn,
+      });
+
+    for (const range of ranges) {
+      const result = await createBooking({ ...base, ...range, dryRun: true });
+      if (result.status >= 400) return failed(range, result);
+    }
+
+    groupId = randomUUID();
+    const bookings = [];
+    for (const range of ranges) {
+      const result = await createBooking({ ...base, ...range, groupId });
+      if (result.status >= 400) {
+        // Someone took this date between the check and now -- undo the rest.
+        await cancelUnpaidBookings({ groupId });
+        return failed(range, result);
+      }
+      bookings.push(result.body);
+    }
+
+    res.status(201).json({ groupId, bookings });
+  } catch (err) {
+    if (groupId) await cancelUnpaidBookings({ groupId }).catch(() => {});
+    console.error("Series booking failed:", err.message, err.stack);
+    res.status(500).json({ error: "Could not create these bookings" });
+  }
+});
 
 // GET: Host's bookings
 router.get("/host", auth, async (req, res) => {
@@ -712,7 +822,10 @@ function buildBookingICS(booking, property) {
 // the guest confirmation/decline email, all in one place so the two entry
 // points can never drift out of sync. Returns { ok: true, booking } or
 // { ok: false, statusCode, error, detail? }.
-async function applyBookingDecision(booking, status, io) {
+// paymentHandled skips the Stripe capture/release (a series' later dates,
+// whose shared payment the first date already handled); notifyGuest false
+// skips the guest email (a series sends one for all its dates).
+async function applyBookingDecision(booking, status, io, { paymentHandled = false, notifyGuest = true } = {}) {
   const property = await Property.findById(booking.property);
   if (!property) return { ok: false, statusCode: 404, error: "Property not found" };
 
@@ -726,7 +839,7 @@ async function applyBookingDecision(booking, status, io) {
 
   if (status === "confirmed" && awaitingCapture) {
     try {
-      await stripe.paymentIntents.capture(booking.paymentIntentId);
+      if (!paymentHandled) await stripe.paymentIntents.capture(booking.paymentIntentId);
     } catch (captureErr) {
       console.error(`Payment capture failed for booking ${booking._id}:`, captureErr.message);
       return {
@@ -751,7 +864,7 @@ async function applyBookingDecision(booking, status, io) {
 
   if (status === "declined" && awaitingCapture) {
     try {
-      await stripe.paymentIntents.cancel(booking.paymentIntentId);
+      if (!paymentHandled) await stripe.paymentIntents.cancel(booking.paymentIntentId);
     } catch (cancelErr) {
       // Log and continue — the booking should still be declined even if
       // Stripe's hold was already released/expired on their side.
@@ -818,6 +931,8 @@ async function applyBookingDecision(booking, status, io) {
   const eventName = status === "confirmed" ? "bookingConfirmed" : "bookingDeclined";
   io.to(`guest_${booking.guest._id}`).emit(eventName, booking);
   io.to(`host_${booking.host.toString()}`).emit(eventName, booking);
+
+  if (!notifyGuest) return { ok: true, booking };
 
   // Send email to guest on approval or decline
   try {
@@ -908,6 +1023,31 @@ async function applyBookingDecision(booking, status, io) {
   return { ok: true, booking };
 }
 
+// A series (bookings sharing a groupId) is approved or declined as one: its
+// dates share one card payment, captured or released once, and the guest
+// gets one email listing every date.
+async function applyDecision(booking, status, io) {
+  if (!booking.groupId) return applyBookingDecision(booking, status, io);
+
+  const series = await Booking.find({ groupId: booking.groupId, status: booking.status }).sort({ checkIn: 1 });
+  let first;
+  for (const [index, item] of series.entries()) {
+    // Only the first can fail (on the payment); the rest don't touch Stripe.
+    const result = await applyBookingDecision(item, status, io, { paymentHandled: index > 0, notifyGuest: false });
+    if (!result.ok) return result;
+    if (index === 0) first = result.booking;
+  }
+
+  const [property, guestUser] = await Promise.all([
+    Property.findById(booking.property?._id || booking.property).select("title location"),
+    User.findById(booking.guest?._id || booking.guest).select("email firstName displayName"),
+  ]);
+  sendSeriesDecisionEmail(series, property, guestUser, status).catch((err) =>
+    console.error("Series decision email failed:", err.message)
+  );
+  return { ok: true, booking: first };
+}
+
 // PUT: Host approve/decline
 router.put("/:id/status", auth, async (req, res) => {
   const { status } = req.body;
@@ -923,7 +1063,7 @@ router.put("/:id/status", auth, async (req, res) => {
       return res.status(400).json({ error: "Invalid status" });
     }
 
-    const result = await applyBookingDecision(booking, status, req.app.get("io"));
+    const result = await applyDecision(booking, status, req.app.get("io"));
     if (!result.ok) {
       return res
         .status(result.statusCode)
@@ -1057,7 +1197,7 @@ router.post("/:id/quick-action", express.urlencoded({ extended: false }), async 
       }));
     }
 
-    const result = await applyBookingDecision(booking, status, req.app.get("io"));
+    const result = await applyDecision(booking, status, req.app.get("io"));
     if (!result.ok) {
       return res.status(result.statusCode).send(quickActionPage({
         title: "Something went wrong",
@@ -1288,6 +1428,33 @@ router.delete("/:id/cancel", auth, async (req, res) => {
       processedAt: stripeRefund ? new Date() : null,
     };
     await booking.save();
+
+    // A series still awaiting host approval shares one card authorisation,
+    // which can't be partly released -- releasing it above cancels the
+    // series' other dates too.
+    if (booking.groupId && awaitingCapture) {
+      const siblings = await Booking.find({
+        groupId: booking.groupId,
+        _id: { $ne: booking._id },
+        status: { $in: ["pending", "confirmed"] },
+      });
+      const siblingIds = siblings.map((sibling) => sibling._id);
+      await Booking.updateMany(
+        { _id: { $in: siblingIds } },
+        {
+          $set: {
+            status: "cancelled",
+            cancelledBy,
+            cancelledAt: new Date(),
+            refund: { percent: 0, amount: 0, reason: refundReason, stripeRefundId: null, processedAt: null },
+          },
+        }
+      );
+      await Payment.updateMany({ booking: { $in: siblingIds } }, { status: "released" });
+      await Property.findByIdAndUpdate(booking.property._id, {
+        $pull: { blockedDates: { bookingId: { $in: siblingIds } } },
+      });
+    }
 
     // ── Unblock dates on property ─────────────────────────────────────────────
     await Property.findByIdAndUpdate(booking.property._id, {

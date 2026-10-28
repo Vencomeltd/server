@@ -8,7 +8,48 @@ const createNotification = require("./notify");
 const sendEmail = require("./sendEmail");
 const sendSMS = require("./sendSMS");
 
-async function sendBookingCreatedNotifications(booking, property, guestUser, hostUser, io) {
+// "Wed 4 Nov 2026, 10:00–13:00" for a same-day booking, otherwise
+// "Wed 4 Nov 2026 – Thu 5 Nov 2026". UK time.
+function bookingDateLabel(booking) {
+  const zone = { timeZone: "Europe/London" };
+  const day = (d) => new Date(d).toLocaleDateString("en-GB", { ...zone, weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  const time = (d) => new Date(d).toLocaleTimeString("en-GB", { ...zone, hour: "2-digit", minute: "2-digit" });
+  return day(booking.checkIn) === day(booking.checkOut)
+    ? `${day(booking.checkIn)}, ${time(booking.checkIn)}–${time(booking.checkOut)}`
+    : `${day(booking.checkIn)} – ${day(booking.checkOut)}`;
+}
+
+const seriesTotal = (bookings) => Math.round(bookings.reduce((sum, b) => sum + (b.totalPrice || 0), 0) * 100) / 100;
+
+// Check-in/check-out rows for one booking, or one "Dates" row listing every
+// date of a series.
+function dateRows(bookings) {
+  const cell = 'style="padding: 6px 0; text-align: right; font-weight: 600;"';
+  const label = 'style="padding: 6px 0; color: #666;"';
+  if (bookings.length === 1) {
+    const [booking] = bookings;
+    return `
+                  <tr>
+                    <td ${label}>Check-in</td>
+                    <td ${cell}>${booking.checkIn.toLocaleDateString()}</td>
+                  </tr>
+                  <tr>
+                    <td ${label}>Check-out</td>
+                    <td ${cell}>${booking.checkOut.toLocaleDateString()}</td>
+                  </tr>`;
+  }
+  return `
+                  <tr>
+                    <td ${label} valign="top">Dates (${bookings.length})</td>
+                    <td ${cell}>${bookings.map(bookingDateLabel).join("<br>")}</td>
+                  </tr>`;
+}
+
+// `series` (Recurring / Multiple Dates) sends one set of notifications listing
+// every date with the series total, instead of one set per date.
+async function sendBookingCreatedNotifications(booking, property, guestUser, hostUser, io, series) {
+  const dates = series?.length > 1 ? series : [booking];
+  const totalPrice = seriesTotal(dates);
   const guestDisplayName = guestUser?.displayName || guestUser?.firstName || "A guest";
   const hostDisplayName = hostUser?.displayName || hostUser?.firstName || "there";
 
@@ -17,7 +58,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
       userId: property.host?._id || property.host,
       type: "booking_request",
       title: "New Booking",
-      body: `${guestDisplayName} booked ${property.title}`,
+      body: `${guestDisplayName} booked ${property.title}${dates.length > 1 ? ` (${dates.length} dates)` : ""}`,
       link: `/bookings/${booking._id}`,
       meta: { bookingId: booking._id },
     });
@@ -57,15 +98,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                     <td style="padding: 6px 0; color: #666;">Full Address</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600; color: #305CDE;">${[property.location.address, property.location.city, property.location.country].filter(Boolean).join(", ")}</td>
                   </tr>
-                  ` : ''}
-                  <tr>
-                    <td style="padding: 6px 0; color: #666;">Check-in</td>
-                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">${booking.checkIn.toLocaleDateString()}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding: 6px 0; color: #666;">Check-out</td>
-                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">${booking.checkOut.toLocaleDateString()}</td>
-                  </tr>
+                  ` : ''}${dateRows(dates)}
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Guests</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">${booking.guests}</td>
@@ -73,7 +106,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                   ${booking.status === "confirmed" ? `
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Booking Amount</td>
-                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${booking.totalPrice}</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${totalPrice}</td>
                   </tr>
                   ${booking.deposit?.amount > 0 ? `
                   <tr>
@@ -83,12 +116,12 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                   ` : ''}
                   <tr>
                     <td style="padding: 8px 0; color: #0A1628; font-weight: 700; border-top: 1px solid #E5E7EB;">Total Paid</td>
-                    <td style="padding: 8px 0; text-align: right; font-weight: 700; border-top: 1px solid #E5E7EB;">£${(booking.totalPrice + (booking.deposit?.amount || 0)).toFixed(2)}</td>
+                    <td style="padding: 8px 0; text-align: right; font-weight: 700; border-top: 1px solid #E5E7EB;">£${(totalPrice + (booking.deposit?.amount || 0)).toFixed(2)}</td>
                   </tr>
                   ` : `
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Total to be paid</td>
-                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${booking.totalPrice}</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${totalPrice}</td>
                   </tr>
                   `}
                 </table>
@@ -158,18 +191,10 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Guest</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">${guestDisplayName}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding: 6px 0; color: #666;">Check-in</td>
-                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">${booking.checkIn.toLocaleDateString()}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding: 6px 0; color: #666;">Check-out</td>
-                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">${booking.checkOut.toLocaleDateString()}</td>
-                  </tr>
+                  </tr>${dateRows(dates)}
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Total</td>
-                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${booking.totalPrice}</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${totalPrice}</td>
                   </tr>
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Status</td>
@@ -218,4 +243,43 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
   }
 }
 
-module.exports = { sendBookingCreatedNotifications };
+// One email for a whole series' approval or decline (routes/bookings.js
+// applyDecision) instead of one per date.
+async function sendSeriesDecisionEmail(series, property, guestUser, status) {
+  if (!guestUser?.email || !series.length) return;
+  const name = guestUser.displayName || guestUser.firstName || "there";
+  const confirmed = status === "confirmed";
+  const address = property?.location
+    ? [property.location.address, property.location.city, property.location.country].filter(Boolean).join(", ")
+    : "";
+  await sendEmail({
+    to: guestUser.email,
+    subject: confirmed ? "Your bookings have been confirmed 🎉" : "Your booking request was declined",
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
+        <img src="https://vencome.com/VenCome.jpg" alt="VenCome" style="height:40px;margin-bottom:24px;" />
+        <h2 style="color:#0A1628;">${confirmed ? "Bookings Confirmed 🎉" : "Booking Not Confirmed"}</h2>
+        <p>Hi ${name},</p>
+        <p>${
+          confirmed
+            ? `Great news! The host has confirmed all ${series.length} dates of your booking for <strong>${property?.title || "your space"}</strong>.`
+            : `Unfortunately, the host was unable to confirm your ${series.length}-date booking request for <strong>${property?.title || "the space"}</strong>.`
+        }</p>
+        <table style="width:100%;border-collapse:collapse;margin:20px 0;background:#F8F6F0;border-radius:8px;padding:16px;">
+          ${confirmed && address ? `<tr><td style="padding:8px 0;color:#666;">Full Address</td><td style="padding:8px 0;text-align:right;font-weight:700;color:#305CDE;">${address}</td></tr>` : ""}
+          <tr><td style="padding:8px 0;color:#666;" valign="top">Dates (${series.length})</td><td style="padding:8px 0;text-align:right;font-weight:700;">${series.map(bookingDateLabel).join("<br>")}</td></tr>
+          <tr><td style="padding:8px 0;color:#666;">${confirmed ? "Total Paid" : "Total"}</td><td style="padding:8px 0;text-align:right;font-weight:700;">£${seriesTotal(series).toFixed(2)}</td></tr>
+        </table>
+        <p>${
+          confirmed
+            ? "Your payment is securely held in escrow and released to the host after each date is completed."
+            : "You have not been charged — the hold on your card has been released."
+        }</p>
+        <a href="https://www.vencome.com/${confirmed ? "customer/bookings" : "search"}" style="display:inline-block;padding:14px 28px;background:#305CDE;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;">${confirmed ? "View My Bookings" : "Find Another Space"}</a>
+        <p style="margin-top:24px;color:#6B7280;font-size:13px;">The VenCome Team</p>
+      </div>
+    `,
+  });
+}
+
+module.exports = { sendBookingCreatedNotifications, sendSeriesDecisionEmail, bookingDateLabel };
