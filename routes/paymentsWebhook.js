@@ -10,6 +10,7 @@ const outlookCalendar = require("../utils/outlookCalendar");
 const { creditDepositToWallet } = require("../utils/wallet");
 const { PAYMENTS_CONFIG } = require("../config/payments");
 const StripeEvent = require("../models/StripeEvent");
+const { ensureBookingStillHeld, releaseLostBookingPayment } = require("../utils/bookingHold");
 const { handleEvent: handleV2Event } = require("../utils/paymentsV2/bookingPayment");
 const { sendBookingCreatedNotifications } = require("../utils/bookingNotifications");
 
@@ -43,6 +44,10 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
 
       const booking = await Booking.findById(bookingId).populate("property", "title host location");
       if (!booking || booking.isPaid) return res.json({ received: true });
+      if (!(await ensureBookingStillHeld(booking))) {
+        await releaseLostBookingPayment(booking, session.payment_intent);
+        return res.json({ received: true });
+      }
 
       booking.stripeSessionId = session.id;
       booking.paymentIntentId = session.payment_intent;

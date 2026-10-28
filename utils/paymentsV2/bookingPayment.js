@@ -11,6 +11,7 @@ const { sendBookingCreatedNotifications } = require("../bookingNotifications");
 const { PAYMENTS_CONFIG } = require("../../config/payments");
 const { planDeposit, computeBookingAmounts, HOUR_MS } = require("./amounts");
 const { placeDeposit, markAwaitingNewCard } = require("./depositHold");
+const { ensureBookingStillHeld, releaseLostBookingPayment } = require("../bookingHold");
 
 const loadBooking = (bookingId) =>
   Booking.findById(bookingId).populate("property", "title host location depositPolicy");
@@ -47,6 +48,7 @@ async function scheduleDepositAfterPayment(booking, charge) {
 async function onBookingAuthorized(pi, io) {
   const booking = await loadBooking(pi.metadata.bookingId);
   if (!booking || booking.paymentAuthorizedAt || booking.isPaid) return;
+  if (!(await ensureBookingStillHeld(booking))) return releaseLostBookingPayment(booking, pi.id);
 
   booking.paymentAuthorizedAt = new Date();
   booking.payment.paymentIntentId = pi.id;
@@ -78,6 +80,10 @@ async function onBookingPaid(pi, io) {
   if (!booking) return;
 
   const firstTimePaid = !booking.isPaid;
+  // Instant Book pays here directly; Request to Book was checked at authorisation.
+  if (firstTimePaid && !booking.paymentAuthorizedAt && !(await ensureBookingStillHeld(booking))) {
+    return releaseLostBookingPayment(booking, pi.id);
+  }
   const charge = await stripe.charges.retrieve(pi.latest_charge);
 
   let stripeFeePence;

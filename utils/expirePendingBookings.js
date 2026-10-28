@@ -86,5 +86,27 @@ module.exports = function setupBookingExpiry() {
     } catch (err) {
       console.error("[Booking Expiry Cron] Error:", err.message);
     }
+
+    // Request to Book attempts the guest never paid for. They stopped
+    // blocking their dates after 30 minutes (utils/unitAvailability.js);
+    // this just clears them out of the bookings lists. No email -- the guest
+    // never finished booking. A late payment is refunded by the webhook.
+    try {
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const result = await Booking.updateMany(
+        {
+          status: "pending",
+          isPaid: { $ne: true },
+          paymentAuthorizedAt: { $exists: false },
+          createdAt: { $lt: cutoff },
+        },
+        { $set: { status: "cancelled", cancelledAt: new Date() } }
+      );
+      if (result.modifiedCount) {
+        console.log(`[Booking Expiry] Cancelled ${result.modifiedCount} abandoned unpaid booking(s)`);
+      }
+    } catch (err) {
+      console.error("[Booking Expiry Cron] Abandoned cleanup error:", err.message);
+    }
   });
 };
