@@ -1499,6 +1499,15 @@ router.post("/users/:id/apply-verified", async (req, res) => {
 });
 
 // ─── Markets ──────────────────────────────────────────────────────────────────
+// Live and planned city lists, trimmed and de-duplicated; a city that's live
+// can't also be listed as planned.
+function marketCityLists(cities, plannedCities) {
+  const clean = (list) => [...new Set((Array.isArray(list) ? list : []).map((c) => String(c).trim()).filter(Boolean))];
+  const live = clean(cities);
+  const liveKeys = new Set(live.map((c) => c.toLowerCase()));
+  return { cities: live, plannedCities: clean(plannedCities).filter((c) => !liveKeys.has(c.toLowerCase())) };
+}
+
 router.get("/markets", async (req, res) => {
   try {
     const markets = await Market.find().sort({ order: 1, createdAt: 1 });
@@ -1510,7 +1519,7 @@ router.get("/markets", async (req, res) => {
 
 router.post("/markets", async (req, res) => {
   try {
-    const { name, flag, cities, status, phase, order, currency, primaryLanguage } = req.body;
+    const { name, flag, cities, plannedCities, status, phase, order, currency, primaryLanguage } = req.body;
     if (!name) return res.status(400).json({ error: "Market name is required" });
 
     const existing = await Market.findOne({ name });
@@ -1519,7 +1528,7 @@ router.post("/markets", async (req, res) => {
     const market = await Market.create({
       name,
       flag: flag || "🌍",
-      cities: Array.isArray(cities) ? cities : [],
+      ...marketCityLists(cities, plannedCities),
       status: status || "planned",
       phase: phase || "",
       order: Number.isFinite(order) ? order : 0,
@@ -1534,11 +1543,18 @@ router.post("/markets", async (req, res) => {
 
 router.patch("/markets/:id", async (req, res) => {
   try {
-    const { name, flag, cities, status, phase, order, currency, primaryLanguage } = req.body;
+    const { name, flag, cities, plannedCities, status, phase, order, currency, primaryLanguage } = req.body;
     const update = {};
     if (name !== undefined) update.name = name;
     if (flag !== undefined) update.flag = flag;
-    if (cities !== undefined) update.cities = Array.isArray(cities) ? cities : [];
+    if (cities !== undefined || plannedCities !== undefined) {
+      const current = await Market.findById(req.params.id).select("cities plannedCities");
+      if (!current) return res.status(404).json({ error: "Market not found" });
+      Object.assign(
+        update,
+        marketCityLists(cities !== undefined ? cities : current.cities, plannedCities !== undefined ? plannedCities : current.plannedCities)
+      );
+    }
     if (status !== undefined) update.status = status;
     if (phase !== undefined) update.phase = phase;
     if (order !== undefined) update.order = order;
