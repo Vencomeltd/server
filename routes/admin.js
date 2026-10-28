@@ -279,10 +279,40 @@ router.get("/overview-analytics", async (req, res) => {
 });
 
 // ─── Users ────────────────────────────────────────────────────────────────────
+// The admin Users tabs. Filtered and counted here, across every user --
+// the tabs used to count and filter only the 20 users on the current page.
+const USER_TABS = {
+  all: {},
+  customers: { isHost: { $ne: true } },
+  hosts: { isHost: true },
+  unverified: { isVerified: { $ne: true } },
+  suspended: { isBanned: true },
+  pending: { isHost: true, "businessVerification.status": "under_review" },
+};
+const NOT_TEST = { isTestAccount: { $ne: true } };
+
+// Each tab's total, without and with test accounts. "all" without test
+// accounts is the same number as GET /stats' users (the Overview total).
+router.get("/users/counts", async (req, res) => {
+  try {
+    const tabs = Object.keys(USER_TABS);
+    const count = (extra) => Promise.all(tabs.map((tab) => User.countDocuments({ ...USER_TABS[tab], ...extra })));
+    const [real, all, test] = await Promise.all([count(NOT_TEST), count({}), User.countDocuments({ isTestAccount: true })]);
+    const byTab = (values) => Object.fromEntries(tabs.map((tab, i) => [tab, values[i]]));
+    res.json({ excludingTest: byTab(real), includingTest: byTab(all), testAccounts: test });
+  } catch (err) {
+    console.error("Admin user counts error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 router.get("/users", async (req, res) => {
-  const { page = 1, limit = 20, q, role, excludeTest } = req.query;
-  const filter = {};
-  if (q) filter.$or = [{ email: { $regex: q, $options: "i" } }, { firstName: { $regex: q, $options: "i" } }];
+  const { page = 1, limit = 20, q, role, excludeTest, tab } = req.query;
+  const filter = { ...(USER_TABS[tab] || {}) };
+  if (q) {
+    const pattern = { $regex: String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
+    filter.$or = [{ email: pattern }, { firstName: pattern }, { lastName: pattern }, { displayName: pattern }];
+  }
   if (role === "host") filter.isHost = true;
   if (role === "customer") filter.isHost = { $ne: true };
   if (role === "admin") filter.isAdmin = true;
@@ -1269,11 +1299,15 @@ router.post("/payments/:bookingId/release", async (req, res) => {
 // (utils/sendScheduledBroadcasts.js) — resolves recipients, emails them, and
 // stamps the Broadcast doc as sent/failed.
 async function sendBroadcastNow(broadcast) {
+  // Same groups (and test-account exclusion) as the Users tab counts, so the
+  // number the admin sees before sending is who actually gets it. Specific
+  // users are sent to exactly as picked.
   const query =
-    broadcast.target === "hosts" ? { isHost: true } :
-    broadcast.target === "customers" ? { isHost: false } :
     broadcast.target === "specific" ? { _id: { $in: broadcast.recipientUsers } } :
-    {};
+    {
+      ...(broadcast.target === "hosts" ? USER_TABS.hosts : broadcast.target === "customers" ? USER_TABS.customers : {}),
+      ...NOT_TEST,
+    };
   const users = await User.find(query).select("email firstName displayName").lean();
 
   if (!users.length) {
