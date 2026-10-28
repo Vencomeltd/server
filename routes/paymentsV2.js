@@ -13,6 +13,7 @@ const { HOUR_MS, computeBookingAmounts, planDeposit, leadHours } = require("../u
 const { getOrCreateCustomer, placeDeposit } = require("../utils/paymentsV2/depositHold");
 const { cancelFromHostDecision } = require("../utils/paymentsV2/cancel");
 const notify = require("../utils/paymentsV2/notify");
+const { ensureBookingStillHeld } = require("../utils/bookingHold");
 
 const router = express.Router();
 
@@ -50,6 +51,9 @@ router.post("/:bookingId/payment-intent", auth, [bookingIdParam], validate, asyn
     if (booking.isPaid) return res.status(400).json({ error: "Booking already paid" });
     if (["cancelled", "declined", "completed"].includes(booking.status)) {
       return res.status(400).json({ error: `Booking is ${booking.status}` });
+    }
+    if (!(await ensureBookingStillHeld(booking))) {
+      return res.status(409).json({ error: "Sorry, these dates were booked by someone else while you were checking out. Please choose new dates." });
     }
 
     const amounts = computeBookingAmounts(booking);

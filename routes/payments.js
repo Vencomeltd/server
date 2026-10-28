@@ -2,6 +2,7 @@ const express = require("express");
 require("dotenv").config({ path: "config.env" });
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const Booking = require("../models/Booking");
+const { ensureBookingStillHeld } = require("../utils/bookingHold");
 const auth = require("../middleware/auth");
 const User = require("../models/User");
 const router = express.Router();
@@ -22,6 +23,12 @@ router.post("/create-checkout-session", auth, async (req, res) => {
     }
     if (booking.isPaid) {
       return res.status(400).json({ error: "Booking already paid" });
+    }
+    if (["cancelled", "declined", "completed"].includes(booking.status)) {
+      return res.status(400).json({ error: `Booking is ${booking.status}` });
+    }
+    if (!(await ensureBookingStillHeld(booking))) {
+      return res.status(409).json({ error: "Sorry, these dates were booked by someone else while you were checking out. Please choose new dates." });
     }
 
     const rawImage = booking.property?.coverImage || "";

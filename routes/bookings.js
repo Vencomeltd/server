@@ -13,7 +13,12 @@ const fs = require("fs");
 const { randomUUID, createHash } = require("crypto");
 const uploadToR2 = require("../utils/uploadService");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-const { getUnitOccupancy, isFullyBooked, pickAvailableUnit } = require("../utils/unitAvailability");
+const {
+  getUnitOccupancy,
+  isFullyBooked,
+  pickAvailableUnit,
+  occupyingBookingFilter,
+} = require("../utils/unitAvailability");
 const {
   calculateDailyPriceWithBreakdown,
   calculateHourlyPriceWithBreakdown,
@@ -198,6 +203,22 @@ router.post(
       if (checkOutDate < new Date()) {
         return res.status(400).json({ error: "Cannot book in the past" });
       }
+
+      // A guest who went Back from checkout and is retrying the same dates
+      // shouldn't be blocked by their own unfinished attempt -- cancel it.
+      // Only Request to Book attempts with no card authorised yet.
+      await Booking.updateMany(
+        {
+          guest: guestId,
+          property: property._id,
+          status: "pending",
+          isPaid: { $ne: true },
+          paymentAuthorizedAt: { $exists: false },
+          checkIn: { $lt: checkOutDate },
+          checkOut: { $gt: checkInDate },
+        },
+        { $set: { status: "cancelled", cancelledBy: "guest", cancelledAt: new Date() } }
+      );
 
       // 3/4. Prevent double booking -- checks both existing bookings and
       // host-blocked dates together, accounting for Property.unitsCount
@@ -1919,7 +1940,7 @@ router.get("/property/:propertyId/booked-dates", async (req, res) => {
 
     const bookings = await Booking.find({
       property: property._id,
-      status: { $in: ["confirmed", "pending"] },
+      ...occupyingBookingFilter(),
     }).select("checkIn checkOut");
 
     const bookedDates = bookings.map((b) => ({

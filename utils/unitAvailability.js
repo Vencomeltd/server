@@ -9,20 +9,52 @@ const Booking = require("../models/Booking");
 // throughout routes/bookings.js.
 const rangesOverlap = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && aEnd > bStart;
 
+// A Request to Book is saved as "pending" the moment the guest clicks the
+// button, before checkout. Until the card is authorised it only holds its
+// dates for HOLD_MINUTES -- otherwise an abandoned checkout (or the guest
+// going Back and retrying) blocks those dates for everyone, forever.
+const HOLD_MINUTES = 30;
+
+// Bookings that occupy their dates right now.
+function occupyingBookingFilter(now = new Date()) {
+  const holdCutoff = new Date(now.getTime() - HOLD_MINUTES * 60 * 1000);
+  return {
+    $or: [
+      { status: "confirmed" },
+      {
+        status: "pending",
+        $or: [{ isPaid: true }, { paymentAuthorizedAt: { $exists: true } }, { createdAt: { $gte: holdCutoff } }],
+      },
+    ],
+  };
+}
+
+// True once an unpaid, unauthorised pending booking's hold has lapsed.
+function holdExpired(booking, now = new Date()) {
+  return (
+    booking.status === "pending" &&
+    !booking.isPaid &&
+    !booking.paymentAuthorizedAt &&
+    new Date(booking.createdAt).getTime() < now.getTime() - HOLD_MINUTES * 60 * 1000
+  );
+}
+
 // Returns { blockedAll, takenUnits } for a property + date range.
 // blockedAll is true if a manual/external block with no specific unit
 // (unitIndex null) overlaps -- that closes every unit regardless of count.
 // takenUnits is the set of specific unit numbers occupied by overlapping
 // pending/confirmed bookings or per-unit manual blocks.
-async function getUnitOccupancy(property, checkIn, checkOut) {
+// excludeBookingId leaves one booking out (re-checking a booking's own dates).
+async function getUnitOccupancy(property, checkIn, checkOut, { excludeBookingId } = {}) {
   const takenUnits = new Set();
   let blockedAll = false;
 
   const overlappingBookings = await Booking.find({
     property: property._id,
-    status: { $in: ["confirmed", "pending"] },
+    ...occupyingBookingFilter(),
     checkIn: { $lt: checkOut },
     checkOut: { $gt: checkIn },
+    ...(excludeBookingId && { _id: { $ne: excludeBookingId } }),
   }).select("unitIndex");
 
   for (const booking of overlappingBookings) {
@@ -61,4 +93,12 @@ function pickAvailableUnit(occupancy, unitsCount) {
   return null;
 }
 
-module.exports = { getUnitOccupancy, isFullyBooked, pickAvailableUnit, rangesOverlap };
+module.exports = {
+  HOLD_MINUTES,
+  occupyingBookingFilter,
+  holdExpired,
+  getUnitOccupancy,
+  isFullyBooked,
+  pickAvailableUnit,
+  rangesOverlap,
+};
