@@ -1410,8 +1410,23 @@ router.delete("/:id/cancel", auth, async (req, res) => {
     }
 
     // Payments v2 deposit: drop a scheduled/held one, refund a charged one.
+    // A series has one deposit (on its first booking) covering every date:
+    // it stays while any other date is still booked, and goes back as soon
+    // as none is.
     try {
-      await cancelV2Deposit(booking);
+      if (!booking.groupId) {
+        await cancelV2Deposit(booking);
+      } else {
+        const stillBooked = await Booking.exists({
+          groupId: booking.groupId,
+          _id: { $ne: booking._id },
+          status: { $in: ["pending", "confirmed"] },
+        });
+        if (!stillBooked) {
+          const holder = await Booking.findOne({ groupId: booking.groupId, "depositHold.coversUntil": { $exists: true } });
+          if (holder) await cancelV2Deposit(holder);
+        }
+      }
     } catch (v2DepositErr) {
       console.error(`Deposit cancellation failed for booking ${booking._id}:`, v2DepositErr.message);
     }

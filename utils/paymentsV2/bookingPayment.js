@@ -9,7 +9,7 @@ const User = require("../../models/User");
 const sendEmail = require("../sendEmail");
 const { sendBookingCreatedNotifications } = require("../bookingNotifications");
 const { PAYMENTS_CONFIG } = require("../../config/payments");
-const { planDeposit, computeBookingAmounts, HOUR_MS } = require("./amounts");
+const { planDeposit, planSeriesDeposit, computeBookingAmounts, HOUR_MS } = require("./amounts");
 const { placeDeposit, markAwaitingNewCard } = require("./depositHold");
 const { ensureBookingStillHeld, releaseLostBookingPayment, cancelUnpaidBookings } = require("../bookingHold");
 
@@ -22,6 +22,7 @@ async function scheduleDepositAfterPayment(booking, charge) {
 
   const policy = booking.property?.depositPolicy;
   const brand = charge.payment_method_details?.card?.brand;
+  if (booking.groupId) return scheduleSeriesDeposit(booking, policy, charge, brand);
   const plan = planDeposit({
     policy,
     brand,
@@ -39,6 +40,25 @@ async function scheduleDepositAfterPayment(booking, charge) {
   dh.attempt = 0;
   dh.status = plan.status === "not_required" ? "not_required" : "scheduled";
   dh.holdAt = plan.holdAt || undefined;
+  await booking.save();
+  return plan;
+}
+
+// One deposit for a whole series: charged on its first booking and kept until
+// the last date's checkout (coversUntil); the other dates carry none.
+async function scheduleSeriesDeposit(booking, policy, charge, brand) {
+  const series = await Booking.find({ groupId: booking.groupId }).sort({ checkIn: 1 }).select("_id checkOut");
+  const isFirst = String(series[0]?._id) === String(booking._id);
+  const plan = isFirst ? planSeriesDeposit(policy) : { mode: "none", status: "not_required" };
+
+  const dh = booking.depositHold;
+  dh.mode = plan.mode;
+  dh.amountPence = plan.mode === "none" ? 0 : policy.amountPence;
+  dh.paymentMethodId = typeof charge.payment_method === "string" ? charge.payment_method : undefined;
+  dh.cardBrand = brand;
+  dh.attempt = 0;
+  dh.status = plan.status === "not_required" ? "not_required" : "scheduled";
+  if (plan.mode !== "none") dh.coversUntil = series[series.length - 1].checkOut;
   await booking.save();
   return plan;
 }
