@@ -4,7 +4,11 @@ const marketSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, unique: true, trim: true },
     flag: { type: String, default: "🌍" }, // emoji flag
+    // Cities VenCome has launched in. Planned expansion cities are kept apart
+    // (plannedCities) so they're never shown as launched -- and commission
+    // overrides only match live cities (utils/commission.js).
     cities: [{ type: String, trim: true }],
+    plannedCities: [{ type: String, trim: true }],
     status: {
       type: String,
       enum: ["active", "coming_soon", "planned"],
