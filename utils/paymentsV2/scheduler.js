@@ -54,13 +54,21 @@ async function expireCardFixes(now) {
 async function releaseUnclaimedDeposits(now) {
   const windowEnd = new Date(now.getTime() - PAYMENTS_CONFIG.claimWindowHours * HOUR_MS);
 
-  const holds = await Booking.find({ "depositHold.status": "held", "damageClaim.status": NO_CLAIM, checkOut: { $lte: windowEnd } });
+  // A series deposit covers every date, so it waits for the last one (coversUntil).
+  const pastCover = {
+    $or: [
+      { "depositHold.coversUntil": { $lte: windowEnd } },
+      { "depositHold.coversUntil": { $exists: false }, checkOut: { $lte: windowEnd } },
+    ],
+  };
+
+  const holds = await Booking.find({ "depositHold.status": "held", "damageClaim.status": NO_CLAIM, ...pastCover });
   await eachSafely("Hold release", holds, async (b) => {
     await releaseHold(b);
     await notify.depositReleased(b);
   });
 
-  const charged = await Booking.find({ "depositHold.status": "charged", "damageClaim.status": NO_CLAIM, checkOut: { $lte: windowEnd } });
+  const charged = await Booking.find({ "depositHold.status": "charged", "damageClaim.status": NO_CLAIM, ...pastCover });
   await eachSafely("Charged deposit refund", charged, (b) => refundChargedDeposit(b));
 }
 

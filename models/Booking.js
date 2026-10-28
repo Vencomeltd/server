@@ -192,6 +192,9 @@ const bookingSchema = new mongoose.Schema(
       cardFixDeadline: Date,
       hostDecision: { type: String, enum: ["proceed_without_deposit", "cancel"] },
       capturedPence: Number,
+      // A series (groupId) takes one deposit, kept on its first booking and
+      // held until the last date: the last date's checkout.
+      coversUntil: Date,
     },
     damageClaim: {
       status: { type: String, enum: ["none", "open", "approved", "rejected"], default: "none" },

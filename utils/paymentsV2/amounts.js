@@ -100,6 +100,16 @@ function planDeposit({ policy, brand, checkIn, checkOut, now = new Date(), listi
   return none("Stay too long for a card hold — no deposit taken", true);
 }
 
+// A series (Recurring / Multiple Dates) takes one deposit for all its dates,
+// charged once and refunded after the last date -- a card hold can't last
+// that long (5-7 days at most), so any deposit on the listing is charged.
+function planSeriesDeposit(policy) {
+  if (!policy || policy.mode === "none" || !(policy.amountPence > 0)) {
+    return { mode: "none", status: "not_required", reason: "No deposit set on this listing" };
+  }
+  return { mode: "charged", status: "charged_now", reason: "One deposit for the whole series, refunded after the last date" };
+}
+
 // Cleans a listing's depositPolicy from a request body: a valid mode, an
 // integer pence amount, and no deposit at all if the amount is zero.
 function normaliseDepositPolicy(raw) {
@@ -132,6 +142,7 @@ module.exports = {
   leadHours,
   holdWindowHours,
   planDeposit,
+  planSeriesDeposit,
   normaliseDepositPolicy,
   retainedHostSharePence,
   getRefundTier,

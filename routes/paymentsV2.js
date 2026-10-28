@@ -9,7 +9,7 @@ const Booking = require("../models/Booking");
 const User = require("../models/User");
 const sendEmail = require("../utils/sendEmail");
 const { PAYMENTS_CONFIG, isPaymentsV2Enabled } = require("../config/payments");
-const { HOUR_MS, computeBookingAmounts, planDeposit, leadHours } = require("../utils/paymentsV2/amounts");
+const { HOUR_MS, computeBookingAmounts, planDeposit, planSeriesDeposit, leadHours } = require("../utils/paymentsV2/amounts");
 const { getOrCreateCustomer, placeDeposit } = require("../utils/paymentsV2/depositHold");
 const { cancelFromHostDecision } = require("../utils/paymentsV2/cancel");
 const notify = require("../utils/paymentsV2/notify");
@@ -168,20 +168,12 @@ router.post(
 
       const [first] = bookings;
       const policy = first.property?.depositPolicy;
-      const plan = planDeposit({
-        policy,
-        brand: undefined,
-        checkIn: first.checkIn,
-        checkOut: first.checkOut,
-        listingPricePence: perBooking[0].listingPricePence,
-      });
+      const plan = planSeriesDeposit(policy);
       const depositSummary = {
         mode: plan.mode,
         amountPence: plan.mode === "none" ? 0 : policy.amountPence,
         reason: plan.reason,
-        holdLeadHours: leadHours("visa"),
-        holdLeadHoursMax: Math.max(...Object.values(PAYMENTS_CONFIG.holdLeadHours)),
-        perDate: true,
+        series: true,
       };
       const summary = bookings.map((b, i) => ({
         _id: b._id,
@@ -385,19 +377,26 @@ router.post(
     if (!isPaymentsV2Enabled()) return res.status(404).json({ error: "Not available" });
 
     try {
-      const booking = await Booking.findOne({ _id: req.params.bookingId, host: req.user.id });
-      if (!booking) return res.status(404).json({ error: "Booking not found" });
+      const claimedBooking = await Booking.findOne({ _id: req.params.bookingId, host: req.user.id });
+      if (!claimedBooking) return res.status(404).json({ error: "Booking not found" });
+      // A series has one deposit, on its first booking: a claim for any of
+      // its dates is made against that deposit.
+      const booking = claimedBooking.groupId
+        ? (await Booking.findOne({ groupId: claimedBooking.groupId, "depositHold.coversUntil": { $exists: true } })) || claimedBooking
+        : claimedBooking;
 
       const dh = booking.depositHold;
       if (!["held", "charged"].includes(dh.status)) {
         return res.status(400).json({ error: "There is no active deposit to claim against." });
       }
       if (booking.damageClaim.status && booking.damageClaim.status !== "none") {
-        return res.status(400).json({ error: "A claim has already been opened for this booking." });
+        return res.status(400).json({
+          error: booking === claimedBooking ? "A claim has already been opened for this booking." : "A claim has already been opened against this series' deposit.",
+        });
       }
 
       const now = Date.now();
-      const checkOutMs = new Date(booking.checkOut).getTime();
+      const checkOutMs = new Date(claimedBooking.checkOut).getTime();
       const windowEndMs = checkOutMs + PAYMENTS_CONFIG.claimWindowHours * HOUR_MS;
       if (now < checkOutMs || now > windowEndMs) {
         return res.status(400).json({ error: `Claims can only be opened in the ${PAYMENTS_CONFIG.claimWindowHours} hours after checkout.` });
@@ -410,7 +409,10 @@ router.post(
 
       booking.damageClaim.status = "open";
       booking.damageClaim.amountPence = amountPence;
-      booking.damageClaim.reason = reason;
+      booking.damageClaim.reason =
+        booking === claimedBooking
+          ? reason
+          : `${reason}\n\n(Series booking -- claimed date: ${new Date(claimedBooking.checkIn).toLocaleDateString("en-GB", { timeZone: "Europe/London" })})`;
       booking.damageClaim.evidenceUrls = evidenceUrls;
       booking.damageClaim.openedAt = new Date();
       await booking.save();
