@@ -19,6 +19,7 @@ const {
   pickAvailableUnit,
   occupyingBookingFilter,
 } = require("../utils/unitAvailability");
+const { cancelUnpaidBookings } = require("../utils/bookingHold");
 const {
   calculateDailyPriceWithBreakdown,
   calculateHourlyPriceWithBreakdown,
@@ -206,18 +207,10 @@ router.post(
 
       // A guest who went Back from checkout and is retrying the same dates
       // shouldn't be blocked by their own unfinished attempt -- cancel it.
-      // Only Request to Book attempts with no card authorised yet.
-      await Booking.updateMany(
-        {
-          guest: guestId,
-          property: property._id,
-          status: "pending",
-          isPaid: { $ne: true },
-          paymentAuthorizedAt: { $exists: false },
-          checkIn: { $lt: checkOutDate },
-          checkOut: { $gt: checkInDate },
-        },
-        { $set: { status: "cancelled", cancelledBy: "guest", cancelledAt: new Date() } }
+      // Only attempts with no payment taken or card authorised yet.
+      await cancelUnpaidBookings(
+        { guest: guestId, property: property._id, checkIn: { $lt: checkOutDate }, checkOut: { $gt: checkInDate } },
+        "guest"
       );
 
       // 3/4. Prevent double booking -- checks both existing bookings and
@@ -558,6 +551,7 @@ router.post(
         listingTermsSnapshot: property.listingTerms?.trim() || undefined,
         listingTermsAgreedAt: property.listingTerms?.trim() ? new Date() : undefined,
         status: isInstantBook ? "confirmed" : "pending",
+        ...(isInstantBook && { instantBook: true }),
         licensePdfUrl,
         ...(hostActionToken && {
           hostActionToken,

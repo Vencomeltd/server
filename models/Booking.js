@@ -66,6 +66,10 @@ const bookingSchema = new mongoose.Schema(
     // Cleared implicitly once isPaid is true (captured) or the booking is
     // declined/expired (authorization released).
     paymentAuthorizedAt: Date,
+    // Instant Book saves the booking as "confirmed" before checkout; this
+    // marks it so an unpaid one only holds its dates for 30 minutes
+    // (utils/unitAvailability.js). Unset on bookings made before it existed.
+    instantBook: Boolean,
     // Lets the host approve/decline straight from the "New booking request"
     // email without logging in first -- single-use (cleared after the
     // booking leaves "pending", however that happens) and time-limited.

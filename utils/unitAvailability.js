@@ -9,10 +9,11 @@ const Booking = require("../models/Booking");
 // throughout routes/bookings.js.
 const rangesOverlap = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && aEnd > bStart;
 
-// A Request to Book is saved as "pending" the moment the guest clicks the
-// button, before checkout. Until the card is authorised it only holds its
-// dates for HOLD_MINUTES -- otherwise an abandoned checkout (or the guest
-// going Back and retrying) blocks those dates for everyone, forever.
+// A booking is saved the moment the guest clicks the button, before checkout
+// ("pending" for Request to Book, "confirmed" for Instant Book). Until it's
+// paid (or the card authorised) it only holds its dates for HOLD_MINUTES --
+// otherwise an abandoned checkout (or the guest going Back and retrying)
+// blocks those dates for everyone, forever.
 const HOLD_MINUTES = 30;
 
 // Bookings that occupy their dates right now.
@@ -20,7 +21,10 @@ function occupyingBookingFilter(now = new Date()) {
   const holdCutoff = new Date(now.getTime() - HOLD_MINUTES * 60 * 1000);
   return {
     $or: [
-      { status: "confirmed" },
+      {
+        status: "confirmed",
+        $or: [{ instantBook: { $ne: true } }, { isPaid: true }, { createdAt: { $gte: holdCutoff } }],
+      },
       {
         status: "pending",
         $or: [{ isPaid: true }, { paymentAuthorizedAt: { $exists: true } }, { createdAt: { $gte: holdCutoff } }],
@@ -29,15 +33,19 @@ function occupyingBookingFilter(now = new Date()) {
   };
 }
 
-// True once an unpaid, unauthorised pending booking's hold has lapsed.
+// True once an unpaid booking's hold has lapsed.
 function holdExpired(booking, now = new Date()) {
-  return (
-    booking.status === "pending" &&
-    !booking.isPaid &&
-    !booking.paymentAuthorizedAt &&
-    new Date(booking.createdAt).getTime() < now.getTime() - HOLD_MINUTES * 60 * 1000
-  );
+  const unpaid =
+    (booking.status === "pending" && !booking.isPaid && !booking.paymentAuthorizedAt) ||
+    (booking.status === "confirmed" && booking.instantBook && !booking.isPaid);
+  return Boolean(unpaid) && new Date(booking.createdAt).getTime() < now.getTime() - HOLD_MINUTES * 60 * 1000;
 }
+
+// Mongo filter for unpaid bookings (either kind), for cleanup queries.
+const UNPAID_BOOKING_FILTER = {
+  isPaid: { $ne: true },
+  $or: [{ status: "pending", paymentAuthorizedAt: { $exists: false } }, { status: "confirmed", instantBook: true }],
+};
 
 // Returns { blockedAll, takenUnits } for a property + date range.
 // blockedAll is true if a manual/external block with no specific unit
@@ -95,6 +103,7 @@ function pickAvailableUnit(occupancy, unitsCount) {
 
 module.exports = {
   HOLD_MINUTES,
+  UNPAID_BOOKING_FILTER,
   occupyingBookingFilter,
   holdExpired,
   getUnitOccupancy,

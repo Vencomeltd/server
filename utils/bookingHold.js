@@ -7,7 +7,30 @@ const Booking = require("../models/Booking");
 const Property = require("../models/Property");
 const User = require("../models/User");
 const sendEmail = require("./sendEmail");
-const { holdExpired, getUnitOccupancy, isFullyBooked, pickAvailableUnit } = require("./unitAvailability");
+const {
+  UNPAID_BOOKING_FILTER,
+  holdExpired,
+  getUnitOccupancy,
+  isFullyBooked,
+  pickAvailableUnit,
+} = require("./unitAvailability");
+
+// Cancels the unpaid bookings matching `filter` (no emails), and removes any
+// Instant Book "booked" entries they put on their listings. Returns how many.
+async function cancelUnpaidBookings(filter, cancelledBy) {
+  const bookings = await Booking.find({ ...filter, ...UNPAID_BOOKING_FILTER }).select("_id property");
+  if (!bookings.length) return 0;
+  const ids = bookings.map((b) => b._id);
+  await Booking.updateMany(
+    { _id: { $in: ids } },
+    { $set: { status: "cancelled", cancelledAt: new Date(), ...(cancelledBy && { cancelledBy }) } }
+  );
+  await Property.updateMany(
+    { _id: { $in: [...new Set(bookings.map((b) => String(b.property)))] } },
+    { $pull: { blockedDates: { bookingId: { $in: ids } } } }
+  );
+  return ids.length;
+}
 
 // True if the booking can still be paid for. If its own unit was taken but
 // another is free, it moves to that unit. If its dates are gone, the booking
@@ -22,9 +45,8 @@ async function ensureBookingStillHeld(booking) {
     : null;
 
   if (!occupancy || isFullyBooked(occupancy, property.unitsCount)) {
+    await cancelUnpaidBookings({ _id: booking._id });
     booking.status = "cancelled";
-    booking.cancelledAt = new Date();
-    await Booking.updateOne({ _id: booking._id }, { status: "cancelled", cancelledAt: booking.cancelledAt });
     return false;
   }
 
@@ -32,6 +54,10 @@ async function ensureBookingStillHeld(booking) {
   if (occupancy.takenUnits.has(ownUnit)) {
     booking.unitIndex = pickAvailableUnit(occupancy, property.unitsCount);
     await Booking.updateOne({ _id: booking._id }, { unitIndex: booking.unitIndex });
+    await Property.updateOne(
+      { _id: property._id, "blockedDates.bookingId": booking._id },
+      { $set: { "blockedDates.$.unitIndex": booking.unitIndex } }
+    );
   }
   return true;
 }
@@ -82,4 +108,4 @@ async function releaseLostBookingPayment(booking, paymentIntentId) {
   });
 }
 
-module.exports = { ensureBookingStillHeld, releaseLostBookingPayment };
+module.exports = { cancelUnpaidBookings, ensureBookingStillHeld, releaseLostBookingPayment };
