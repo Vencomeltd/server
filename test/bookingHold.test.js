@@ -34,12 +34,19 @@ let others = [];
 let lastFind;
 const updates = [];
 Booking.find = (query) => {
+  // cancelUnpaidBookings looks the booking itself up by id; anything else
+  // is the occupancy check.
+  if (query._id && typeof query._id === "string") return { select: async () => [{ _id: query._id, property: "prop1" }] };
   lastFind = query;
   return { select: async () => others };
 };
 Booking.updateOne = async (filter, update) => updates.push([filter, update]);
+Booking.updateMany = async (filter, update) => updates.push([filter, update]);
 let unitsCount = 1;
+const propertyUpdates = [];
 Property.findById = () => ({ select: async () => ({ _id: "prop1", unitsCount, blockedDates: [] }) });
+Property.updateOne = async (filter, update) => propertyUpdates.push([filter, update]);
+Property.updateMany = async (filter, update) => propertyUpdates.push([filter, update]);
 User.findById = () => ({ select: async () => ({ email: "guest@example.test", firstName: "Sam" }) });
 
 const pendingBooking = (createdMinutesAgo, extra = {}) => ({
@@ -59,6 +66,7 @@ test.beforeEach(() => {
   others = [];
   lastFind = undefined;
   updates.length = 0;
+  propertyUpdates.length = 0;
   stripeCalls.length = 0;
   emails.length = 0;
   unitsCount = 1;
@@ -77,10 +85,20 @@ test("hold: authorised, paid and confirmed bookings never lapse", () => {
   assert.equal(holdExpired(pendingBooking(600, { status: "confirmed" })), false);
 });
 
-test("occupancy filter: confirmed always; pending only if paid, authorised or under 30 minutes old", () => {
+test("hold: an unpaid Instant Book lapses after 30 minutes; older ones without the marker don't", () => {
+  const instant = (minutes, extra) => pendingBooking(minutes, { status: "confirmed", instantBook: true, ...extra });
+  assert.equal(holdExpired(instant(29)), false);
+  assert.equal(holdExpired(instant(31)), true);
+  assert.equal(holdExpired(instant(600, { isPaid: true })), false);
+  assert.equal(holdExpired(pendingBooking(600, { status: "confirmed" })), false);
+});
+
+test("occupancy filter: confirmed unless an unpaid Instant Book over 30 minutes old; pending only if paid, authorised or under 30 minutes old", () => {
   const now = new Date("2026-10-28T12:00:00Z");
   const [confirmed, pending] = occupyingBookingFilter(now).$or;
-  assert.deepEqual(confirmed, { status: "confirmed" });
+  assert.equal(confirmed.status, "confirmed");
+  assert.deepEqual(confirmed.$or.slice(0, 2), [{ instantBook: { $ne: true } }, { isPaid: true }]);
+  assert.equal(confirmed.$or[2].createdAt.$gte.getTime(), now.getTime() - 30 * MIN);
   assert.equal(pending.status, "pending");
   assert.deepEqual(pending.$or.slice(0, 2), [{ isPaid: true }, { paymentAuthorizedAt: { $exists: true } }]);
   assert.equal(pending.$or[2].createdAt.$gte.getTime(), now.getTime() - 30 * MIN);
@@ -102,12 +120,13 @@ test("guard: lapsed hold, dates still free -> can pay; its own booking is left o
   assert.equal(updates.length, 0);
 });
 
-test("guard: lapsed hold, someone else took the dates -> booking cancelled", async () => {
+test("guard: lapsed hold, someone else took the dates -> booking cancelled, its listing entry removed", async () => {
   others = [{ unitIndex: 1 }];
-  const booking = pendingBooking(45);
+  const booking = pendingBooking(45, { status: "confirmed", instantBook: true });
   assert.equal(await ensureBookingStillHeld(booking), false);
   assert.equal(booking.status, "cancelled");
-  assert.equal(updates[0][1].status, "cancelled");
+  assert.equal(updates[0][1].$set.status, "cancelled");
+  assert.deepEqual(propertyUpdates[0][1], { $pull: { blockedDates: { bookingId: { $in: ["b1"] } } } });
 });
 
 test("guard: lapsed hold, own unit taken but another free -> moves to the free unit", async () => {
@@ -117,6 +136,7 @@ test("guard: lapsed hold, own unit taken but another free -> moves to the free u
   assert.equal(await ensureBookingStillHeld(booking), true);
   assert.equal(booking.unitIndex, 2);
   assert.deepEqual(updates[0][1], { unitIndex: 2 });
+  assert.deepEqual(propertyUpdates[0][1], { $set: { "blockedDates.$.unitIndex": 2 } });
 });
 
 test("late payment captured -> refunded in full, guest emailed", async () => {
