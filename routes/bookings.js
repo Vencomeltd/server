@@ -20,8 +20,10 @@ const {
   occupyingBookingFilter,
 } = require("../utils/unitAvailability");
 const { cancelUnpaidBookings } = require("../utils/bookingHold");
-const { sendSeriesDecisionEmail } = require("../utils/bookingNotifications");
+const { sendSeriesDecisionEmail, breakdownRows } = require("../utils/bookingNotifications");
 const { recurringDays, ukDay, ukMinutes } = require("../utils/recurrence");
+const { quote: quotePrice, TAX_KEY } = require("../utils/vatPricing");
+const PlatformSettings = require("../models/PlatformSettings");
 const {
   calculateDailyPriceWithBreakdown,
   calculateHourlyPriceWithBreakdown,
@@ -439,8 +441,21 @@ async function createBooking({
   // utils/commission.js and the admin Commission Settings page.
   const commissionRate = await resolveCommissionRate(effectivePricingType, property);
 
-  const platformFee = Math.round(totalPrice * commissionRate * 100) / 100;
-  const hostAmount = Math.round((totalPrice - platformFee) * 100) / 100;
+  // totalPrice so far is the core price (ex VAT). Add utilities and VAT
+  // from the listing's settings for this unit, and take commission from the
+  // core only -- utils/vatPricing.js, the same function the site shows.
+  // A listing with no VAT settings comes out exactly as before.
+  const { commissionBase } = await PlatformSettings.getSettings();
+  const pricingBreakdown = quotePrice({
+    corePence: Math.round(totalPrice * 100),
+    quantity: totalUnits,
+    tax: property.pricing?.vat?.[TAX_KEY[effectivePricingType]],
+    commissionRate,
+    commissionBase,
+  });
+  totalPrice = pricingBreakdown.totalPence / 100;
+  const platformFee = pricingBreakdown.commissionPence / 100;
+  const hostAmount = pricingBreakdown.hostPayoutPence / 100;
 
   // 9. Create booking
   const isInstantBook = Boolean(property.bookingSettings?.instantBook);
@@ -461,6 +476,7 @@ async function createBooking({
     totalPrice,
     platformFee,
     hostAmount,
+    pricingBreakdown,
     // Optional security deposit, charged alongside rent as a second
     // Stripe Checkout line item (see routes/payments.js) but kept
     // entirely separate from totalPrice/platformFee/hostAmount above --
@@ -990,6 +1006,7 @@ async function applyBookingDecision(booking, status, io, { paymentHandled = fals
                 ${fullAddress ? `<tr><td style="padding:8px 0;color:#666;">Full Address</td><td style="padding:8px 0;text-align:right;font-weight:700;color:#305CDE;">${fullAddress}</td></tr>` : ""}
                 <tr><td style="padding:8px 0;color:#666;">Check-in</td><td style="padding:8px 0;text-align:right;font-weight:700;">${new Date(booking.checkIn).toLocaleDateString()}</td></tr>
                 <tr><td style="padding:8px 0;color:#666;">Check-out</td><td style="padding:8px 0;text-align:right;font-weight:700;">${new Date(booking.checkOut).toLocaleDateString()}</td></tr>
+                ${breakdownRows([booking])}
                 <tr><td style="padding:8px 0;color:#666;">Total Paid</td><td style="padding:8px 0;text-align:right;font-weight:700;">£${booking.totalPrice}</td></tr>
               </table>
               <p>Your payment is securely held in escrow and will be released to the host after your booking is completed.</p>

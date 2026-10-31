@@ -1,5 +1,27 @@
 const mongoose = require("mongoose");
 
+// How a host priced one unit (per hour/day/week/month) for VAT, plus any
+// utilities charge -- see utils/vatPricing.js. pricing.hourly etc. hold the
+// core price ex VAT; these keep what the host entered and the VAT split.
+// Absent = "VAT status not set" (every listing made before this): priced
+// exactly as before, flagged in admin.
+const unitTaxSchema = new mongoose.Schema(
+  {
+    status: { type: String, enum: ["excludes", "includes", "none"] },
+    ratePct: { type: Number, default: 20, min: 0, max: 100 },
+    enteredPence: Number,
+    netPence: Number,
+    vatPence: Number,
+    grossPence: Number,
+    utilities: {
+      amountPence: { type: Number, default: 0, min: 0 },
+      per: { type: String, enum: ["unit", "booking"], default: "unit" },
+      vatable: { type: Boolean, default: true },
+    },
+  },
+  { _id: false }
+);
+
 const propertySchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true },
@@ -82,6 +104,12 @@ const propertySchema = new mongoose.Schema(
       weekly: { type: Number, default: 0 },
       monthly: { type: Number, default: 0 },
       annual: { type: Number, default: 0 },
+      vat: {
+        hourly: { type: unitTaxSchema, default: undefined },
+        daily: { type: unitTaxSchema, default: undefined },
+        weekly: { type: unitTaxSchema, default: undefined },
+        monthly: { type: unitTaxSchema, default: undefined },
+      },
       discounts: {
         newListing: { type: Boolean, default: false },
         lastMinute: { type: Boolean, default: false },

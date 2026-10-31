@@ -181,6 +181,7 @@ router.post(
         checkOut: b.checkOut,
         status: b.status,
         amountPence: perBooking[i].amountPence,
+        breakdown: b.pricingBreakdown,
       }));
 
       const existingId = first.payment?.paymentIntentId;

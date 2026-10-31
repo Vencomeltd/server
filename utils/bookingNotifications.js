@@ -45,6 +45,25 @@ function dateRows(bookings) {
                   </tr>`;
 }
 
+// Core / utilities / VAT rows (summed over a series), only when the booking
+// has utilities or VAT -- otherwise its total is all core.
+function breakdownRows(bookings) {
+  const parts = bookings.map((b) => b.pricingBreakdown).filter((bd) => bd?.totalPence);
+  const sum = (field) => parts.reduce((acc, bd) => acc + (bd[field] || 0), 0);
+  if (!parts.length || (!sum("utilitiesPence") && !sum("vatPence"))) return "";
+  const money = (pence) => `£${(pence / 100).toFixed(2)}`;
+  const row = (label, pence) => `
+                  <tr>
+                    <td style="padding: 6px 0; color: #666;">${label}</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">${money(pence)}</td>
+                  </tr>`;
+  return [
+    row("Core price", sum("corePence")),
+    sum("utilitiesPence") ? row("Utilities", sum("utilitiesPence")) : "",
+    sum("vatPence") ? row(`VAT at ${parts[0].vatRatePct}%`, sum("vatPence")) : "",
+  ].join("");
+}
+
 // `series` (Recurring / Multiple Dates) sends one set of notifications listing
 // every date with the series total, instead of one set per date.
 async function sendBookingCreatedNotifications(booking, property, guestUser, hostUser, io, series) {
@@ -98,7 +117,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                     <td style="padding: 6px 0; color: #666;">Full Address</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600; color: #305CDE;">${[property.location.address, property.location.city, property.location.country].filter(Boolean).join(", ")}</td>
                   </tr>
-                  ` : ''}${dateRows(dates)}
+                  ` : ''}${dateRows(dates)}${breakdownRows(dates)}
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Guests</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">${booking.guests}</td>
@@ -191,7 +210,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Guest</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">${guestDisplayName}</td>
-                  </tr>${dateRows(dates)}
+                  </tr>${dateRows(dates)}${breakdownRows(dates)}
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Total</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${totalPrice}</td>
@@ -282,4 +301,4 @@ async function sendSeriesDecisionEmail(series, property, guestUser, status) {
   });
 }
 
-module.exports = { sendBookingCreatedNotifications, sendSeriesDecisionEmail, bookingDateLabel };
+module.exports = { sendBookingCreatedNotifications, sendSeriesDecisionEmail, bookingDateLabel, breakdownRows };

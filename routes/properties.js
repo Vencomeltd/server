@@ -22,7 +22,49 @@ const { client } = require("../utils/redisClient");
 const geoip = require("geoip-lite");
 const { generateUniqueSlug, generateSlug } = require("../utils/slugify");
 
+const { buildUnitTax } = require("../utils/vatPricing");
 const router = express.Router();
+
+// pricing.vat from the listing form: every figure is recomputed here (never
+// the browser's maths), and pricing[unit] becomes the core price ex VAT --
+// what every booking and commission calculation reads. See utils/vatPricing.js.
+const VAT_UNITS = ["hourly", "daily", "weekly", "monthly"];
+function applyVatSettings(pricing, existingVat) {
+  if (!pricing) return pricing;
+  if (!pricing.vat) {
+    // A form without the VAT fields (e.g. an older edit page) keeps what's saved.
+    if (existingVat) pricing.vat = existingVat;
+    return pricing;
+  }
+  const vat = {};
+  for (const unit of VAT_UNITS) {
+    const entry = pricing.vat[unit];
+    if (!entry || !(Number(entry.enteredPence) > 0)) continue;
+    vat[unit] = buildUnitTax(entry);
+    pricing[unit] = vat[unit].netPence / 100;
+  }
+  pricing.vat = vat;
+  return pricing;
+}
+
+// Commission rates for the listing form's payout calculator (an estimate --
+// a market override can change the hourly/daily/weekly rate at booking).
+router.get("/commission-rates", async (req, res) => {
+  try {
+    const PlatformSettings = require("../models/PlatformSettings");
+    const settings = await PlatformSettings.getSettings();
+    res.json({
+      hourly: settings.defaultCommissionRate,
+      daily: settings.defaultCommissionRate,
+      weekly: settings.defaultCommissionRate,
+      monthly: 6,
+      annual: 3,
+      base: settings.commissionBase || "core",
+    });
+  } catch {
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 // Configure multer storage for temporary files
 const storage = multer.diskStorage({
@@ -211,7 +253,7 @@ router.post(
         coordinates = JSON.parse(req.body.coordinates);
         features = JSON.parse(req.body.features);
         extras = JSON.parse(req.body.extras || "[]");
-        pricing = JSON.parse(req.body.pricing);
+        pricing = applyVatSettings(JSON.parse(req.body.pricing));
         // The client sends discounts as its own field, separate from
         // pricing -- fold it in here since that's where the schema keeps it
         // (pricing.discounts). This field was previously never read at all,
@@ -1524,7 +1566,7 @@ router.put(
       property.markModified("features");
     }
     if (extras) property.extras = extras;
-    if (pricing) property.pricing = pricing;
+    if (pricing) property.pricing = applyVatSettings(pricing, property.pricing?.vat?.toObject?.() || property.pricing?.vat);
     if (req.body.discounts) {
       try {
         const discounts = JSON.parse(req.body.discounts);

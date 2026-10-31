@@ -96,6 +96,19 @@ const bookingSchema = new mongoose.Schema(
     escrowReleased: { type: Boolean, default: false },
     platformFee: { type: Number, default: 0 },
     hostAmount: { type: Number, default: 0 },
+    // Core / utilities / VAT split of totalPrice, and the commission taken
+    // from the core (utils/vatPricing.js quote). Unset on bookings made
+    // before VAT pricing -- their totalPrice was all core.
+    pricingBreakdown: {
+      corePence: Number,
+      utilitiesPence: Number,
+      vatStatus: String,
+      vatRatePct: Number,
+      vatPence: Number,
+      totalPence: Number,
+      commissionPence: Number,
+      hostPayoutPence: Number,
+    },
     licensePdfUrl: {
       type: String,
       default: null,
