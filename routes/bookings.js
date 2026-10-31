@@ -21,6 +21,7 @@ const {
 } = require("../utils/unitAvailability");
 const { cancelUnpaidBookings } = require("../utils/bookingHold");
 const { sendSeriesDecisionEmail } = require("../utils/bookingNotifications");
+const { recurringDays, ukDay, ukMinutes } = require("../utils/recurrence");
 const {
   calculateDailyPriceWithBreakdown,
   calculateHourlyPriceWithBreakdown,
@@ -278,13 +279,10 @@ async function createBooking({
     const [openH, openM] = openTime.split(":").map(Number);
     const [closeH, closeM] = closeTime.split(":").map(Number);
 
-    const checkInH = checkInDate.getUTCHours();
-    const checkInMin = checkInDate.getUTCMinutes();
-    const checkOutH = checkOutDate.getUTCHours();
-    const checkOutMin = checkOutDate.getUTCMinutes();
-
-    const checkInMinutes = checkInH * 60 + checkInMin;
-    const checkOutMinutes = checkOutH * 60 + checkOutMin;
+    // Opening hours are UK times, so compare in UK time (UTC is an hour
+    // out during British Summer Time).
+    const checkInMinutes = ukMinutes(checkInDate);
+    const checkOutMinutes = ukMinutes(checkOutDate);
     const openMinutes = openH * 60 + openM;
     const closeMinutes = closeH * 60 + closeM;
 
@@ -638,7 +636,8 @@ router.post(
 // guest never ends up with only some of their dates booked. The bookings
 // share a groupId and are paid for together (POST /group/:groupId/payment-
 // intent in routes/paymentsV2.js).
-const MAX_SERIES_DATES = 52;
+// e.g. Mon-Fri for most of a year.
+const MAX_SERIES_DATES = 200;
 const seriesDateLabel = (date) =>
   new Date(date).toLocaleString("en-GB", {
     weekday: "short",
@@ -650,7 +649,7 @@ const seriesDateLabel = (date) =>
   });
 
 router.post("/group", auth, async (req, res) => {
-  const { propertyId, dates, guests, pricingUnit, agreedToTerms } = req.body;
+  const { propertyId, dates, guests, pricingUnit, agreedToTerms, recurrence } = req.body;
   const guestId = req.user.id;
 
   if (!Array.isArray(dates) || dates.length < 2 || dates.length > MAX_SERIES_DATES) {
@@ -670,10 +669,20 @@ router.post("/group", auth, async (req, res) => {
 
   let groupId;
   try {
-    const property = await Property.findById(propertyId).select("listingTerms");
+    const property = await Property.findById(propertyId).select("listingTerms availability");
     if (!property) return res.status(404).json({ error: "Property not found or unavailable" });
     if (property.listingTerms?.trim() && String(agreedToTerms) !== "true") {
       return res.status(400).json({ error: "You must agree to the host's listing terms before booking." });
+    }
+
+    // A recurring booking also sends its pattern: the dates must be exactly
+    // the days that pattern books (the same logic the booking form uses).
+    if (recurrence) {
+      const expected = recurringDays({ ...recurrence, openDays: property.availability?.openDays || [] });
+      const sent = ranges.map((range) => ukDay(range.checkIn));
+      if (expected.length !== sent.length || expected.some((day, i) => day !== sent[i])) {
+        return res.status(400).json({ error: "These dates don't match the recurring pattern. Please refresh the page and try again." });
+      }
     }
 
     const base = { guestId, propertyId, guests, pricingUnit, extras: [] };
