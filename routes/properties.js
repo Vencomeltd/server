@@ -570,6 +570,7 @@ router.post(
         pricing,
         bookingSettings,
         host,
+        createdBy: req.user.impersonatedBy || req.user.id,
         category: category && category.trim() ? category : undefined,
         subcategory: typeof subcategory === "string" ? subcategory : "",
         categories: categoriesArray,

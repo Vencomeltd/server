@@ -861,9 +861,35 @@ router.patch("/support-tickets/:id", async (req, res) => {
 });
 
 // ─── Properties ───────────────────────────────────────────────────────────────
+// The admin listings status tabs. Drafts aren't listings yet -- they live in
+// the Draft collection (GET /drafts below) -- so they're counted separately.
+const LISTING_STATUS = {
+  active: { isActive: true },
+  inactive: { isActive: { $ne: true }, moderationStatus: { $ne: "pending_review" } },
+  pending: { isActive: { $ne: true }, moderationStatus: "pending_review" },
+};
+const testHostFilter = async () => ({ $nin: await User.find({ isTestAccount: true }).distinct("_id") });
+
+// GET /properties/counts?excludeTest=true -- each status tab's total. "active"
+// is the number the Overview shows as listings.
+router.get("/properties/counts", async (req, res) => {
+  try {
+    const hostFilter = req.query.excludeTest === "true" ? { host: await testHostFilter() } : {};
+    const [all, active, inactive, pending, draft] = await Promise.all([
+      Property.countDocuments(hostFilter),
+      ...["active", "inactive", "pending"].map((status) => Property.countDocuments({ ...LISTING_STATUS[status], ...hostFilter })),
+      Draft.countDocuments(hostFilter),
+    ]);
+    res.json({ all, active, inactive, pending, draft });
+  } catch (err) {
+    console.error("Admin listing counts error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 router.get("/properties", async (req, res) => {
-  const { page = 1, limit = 20, q, moderationStatus, excludeTest } = req.query;
-  const filter = {};
+  const { page = 1, limit = 20, q, moderationStatus, excludeTest, status } = req.query;
+  const filter = { ...(LISTING_STATUS[status] || {}) };
   if (q) filter.title = { $regex: q, $options: "i" };
   // Lets the moderation queue query platform-wide regardless of whatever
   // page the main "all listings" browser happens to be on, instead of the
@@ -872,13 +898,13 @@ router.get("/properties", async (req, res) => {
   // Opt-in only, same reasoning as GET /users's excludeTest -- the
   // browsable listings table should still show test hosts' listings, but
   // the "Total Listings" summary count asks for this explicitly.
-  if (excludeTest === "true") {
-    const testUserIds = await User.find({ isTestAccount: true }).distinct("_id");
-    filter.host = { $nin: testUserIds };
-  }
+  if (excludeTest === "true") filter.host = await testHostFilter();
   const skip = (parseInt(page) - 1) * parseInt(limit);
   const [properties, total] = await Promise.all([
-    Property.find(filter).populate("host", "firstName lastName email displayName").populate("category", "name").sort({ order: 1, createdAt: -1 }).skip(skip).limit(parseInt(limit)),
+    Property.find(filter)
+      .populate("host", "firstName lastName email displayName businessVerification.companyName isTestAccount accountFlag")
+      .populate("createdBy", "firstName lastName email displayName")
+      .populate("category", "name").sort({ order: 1, createdAt: -1 }).skip(skip).limit(parseInt(limit)),
     Property.countDocuments(filter),
   ]);
   res.json({ properties, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
@@ -890,22 +916,41 @@ router.get("/properties", async (req, res) => {
 // published the listing (see the draftId fix in POST /properties) can be
 // removed with DELETE below.
 router.get("/drafts", async (req, res) => {
-  const { page = 1, limit = 20 } = req.query;
+  const { page = 1, limit = 20, excludeTest } = req.query;
+  const filter = excludeTest === "true" ? { host: await testHostFilter() } : {};
   const skip = (parseInt(page) - 1) * parseInt(limit);
   const [drafts, total] = await Promise.all([
-    Draft.find({})
-      .populate("host", "firstName lastName email displayName")
+    Draft.find(filter)
+      .select("-formData")
+      .populate("host", "firstName lastName email displayName businessVerification.companyName isTestAccount accountFlag")
+      .populate("createdBy", "firstName lastName email displayName")
       .sort({ createdAt: 1 })
       .skip(skip)
       .limit(parseInt(limit)),
-    Draft.countDocuments({}),
+    Draft.countDocuments(filter),
   ]);
   res.json({ drafts, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
+});
+
+// GET /drafts/:id -- one draft in full (everything the host has entered so
+// far, photos included), so admin can see it without a public page.
+router.get("/drafts/:id", async (req, res) => {
+  try {
+    const draft = await Draft.findById(req.params.id)
+      .populate("host", "firstName lastName email displayName businessVerification.companyName")
+      .populate("createdBy", "firstName lastName email displayName");
+    if (!draft) return res.status(404).json({ error: "Draft not found" });
+    res.json({ draft });
+  } catch (err) {
+    console.error("Admin draft detail error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 router.delete("/drafts/:id", async (req, res) => {
   const draft = await Draft.findByIdAndDelete(req.params.id);
   if (!draft) return res.status(404).json({ error: "Draft not found" });
+  console.log(`[Audit] Admin ${req.user.id} deleted draft ${draft._id} "${draft.title}" (host ${draft.host})`);
   res.json({ success: true });
 });
 

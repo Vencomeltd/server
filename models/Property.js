@@ -204,6 +204,10 @@ const propertySchema = new mongoose.Schema(
       default: "pending_review",
     },
     host: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    // Who actually built this: the host, or a VenCome admin working in the
+    // host's account (impersonation). Unset on records made before this was
+    // added -- those were built by the host.
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     category: { type: mongoose.Schema.Types.ObjectId, ref: "Category" },
     subcategory: { type: String, default: "" },
     categories: [{ type: mongoose.Schema.Types.ObjectId, ref: "Category" }],
