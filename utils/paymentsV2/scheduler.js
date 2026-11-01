@@ -14,6 +14,7 @@ const { PAYMENTS_CONFIG } = require("../../config/payments");
 const { HOUR_MS, retainedHostSharePence } = require("./amounts");
 const { placeDeposit, releaseHold, captureHold, refundChargedDeposit } = require("./depositHold");
 const notify = require("./notify");
+const { chargeDueLeaseMonths } = require("./lease");
 
 const NO_CLAIM = { $in: ["none", null] };
 
@@ -105,7 +106,8 @@ async function payHosts(now) {
     status: { $in: ["confirmed", "completed"] },
     escrowReleased: { $ne: true },
     disputeFrozen: { $ne: true },
-    checkOut: { $lte: cutoff },
+    // A lease month is paid out once it has started (rent in advance).
+    $or: [{ "lease.months": { $exists: false }, checkOut: { $lte: cutoff } }, { "lease.months": { $exists: true }, checkIn: { $lte: cutoff } }],
   });
 
   await eachSafely("Host payout", ready, async (b) => {
@@ -239,6 +241,7 @@ async function runPaymentsSchedulerOnce(nowOverride) {
   try {
     const now = nowOverride || new Date();
     for (const [label, step] of [
+      ["lease months", chargeDueLeaseMonths],
       ["place holds", placeDueHolds],
       ["card fixes", expireCardFixes],
       ["release deposits", releaseUnclaimedDeposits],

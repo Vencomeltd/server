@@ -1,6 +1,7 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { renderEmail, blocks } = require("../utils/emailTemplates");
 const crypto = require("crypto");
 const User = require("../models/User");
 const Property = require("../models/Property");
@@ -74,12 +75,7 @@ router.post("/signup", authLimiter, async (req, res) => {
 
     await sendEmail({
       to: normalizedEmail,
-      subject: "Verify Your Email Address",
-      html: emailTemplate(
-        "Welcome! Verify Your Email",
-        `Your verification code is:`,
-        otp
-      ),
+      ...(await renderEmail("verification", { code: blocks.code(otp) })),
     });
 
     res.json({
@@ -122,12 +118,7 @@ router.post("/login", authLimiter, async (req, res) => {
 
         await sendEmail({
           to: normalizedEmail,
-          subject: "Verify Your Email Address",
-          html: emailTemplate(
-            "Verify Your Email",
-            "Your account hasn't been verified yet. Your verification code is:",
-            otp
-          ),
+          ...(await renderEmail("verification", { code: blocks.code(otp) })),
         });
 
         return res.json({
@@ -188,6 +179,24 @@ router.post("/login", authLimiter, async (req, res) => {
   } catch (err) {
     console.error("Login error:", err);
     res.status(500).json({ error: "Server error, please try again later" });
+  }
+});
+
+// ─── GET /auth/verify-reminders/unsubscribe ───────────────────────────────────
+// The link in every "Verify your account" reminder (utils/verifyReminders.js).
+// The token only ever carries this purpose, so it can't be used to log in.
+router.get("/verify-reminders/unsubscribe", async (req, res) => {
+  const page = (message) =>
+    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VenCome</title></head>
+    <body style="font-family:Arial,sans-serif;background:#f4f4f7;padding:40px 16px;"><div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:30px;text-align:center;color:#333;">
+    <h2 style="color:#305CDE;margin-top:0;">VenCome</h2><p>${message}</p><p><a href="https://www.vencome.com" style="color:#305CDE;">Go to VenCome</a></p></div></body></html>`;
+  try {
+    const decoded = jwt.verify(String(req.query.token || ""), process.env.JWT_SECRET);
+    if (decoded.purpose !== "verify-reminders-unsubscribe") throw new Error("wrong purpose");
+    await User.updateOne({ _id: decoded.id }, { $set: { "verifyReminders.optedOut": true, "verifyReminders.optedOutAt": new Date() } });
+    res.send(page("You've been unsubscribed. We won't send you any more account verification reminders."));
+  } catch {
+    res.status(400).send(page("This unsubscribe link is invalid or has expired."));
   }
 });
 

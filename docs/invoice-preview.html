@@ -1,0 +1,128 @@
+<!doctype html>
+<!--
+  Invoice redesign, step 1 (build spec 31 Oct 2026, section 10): an HTML
+  preview of the new invoice for client approval. Sample data only. Once
+  approved, utils/generateInvoice.js (PDF) is rebuilt to match.
+  Company number and registered address are placeholders until supplied.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VenCome invoice preview</title>
+<style>
+  :root { --navy: #0A1628; --blue: #305CDE; --grey: #6B7280; --line: #E5E7EB; --soft: #F5F7FF; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #EEF0F4; font-family: "Manrope", Arial, Helvetica, sans-serif; color: var(--navy); }
+  .page { width: 210mm; min-height: 297mm; margin: 24px auto; background: #fff; padding: 18mm 18mm 14mm; display: flex; flex-direction: column; box-shadow: 0 6px 30px rgba(10,22,40,0.08); }
+  header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 18px; border-bottom: 3px solid var(--blue); }
+  .logo img { height: 40px; display: block; }
+  .tagline { margin: 8px 0 0; font-size: 13px; color: var(--grey); }
+  .title { text-align: right; }
+  .title h1 { margin: 0; font-size: 30px; letter-spacing: 3px; }
+  .title p { margin: 4px 0 0; font-size: 13px; color: var(--grey); }
+  .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 22px 0; }
+  .label { font-size: 10px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--grey); margin: 0 0 4px; }
+  .value { font-size: 14px; font-weight: 700; margin: 0; }
+  .parties { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 16px; background: var(--soft); border-radius: 10px; }
+  .parties p { margin: 0; font-size: 13px; line-height: 1.55; }
+  .parties strong { font-size: 14px; }
+  .booking { margin: 22px 0 8px; font-size: 13px; color: var(--grey); }
+  .booking strong { color: var(--navy); }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  th { text-align: left; font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--grey); padding: 10px 8px; border-bottom: 2px solid var(--navy); }
+  th.num, td.num { text-align: right; white-space: nowrap; }
+  td { padding: 11px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td small { display: block; color: var(--grey); font-size: 12px; margin-top: 2px; }
+  .totals { margin-left: auto; width: 46%; margin-top: 14px; font-size: 13px; }
+  .totals div { display: flex; justify-content: space-between; padding: 6px 8px; }
+  .totals .grand { margin-top: 6px; padding: 12px 8px; background: var(--navy); color: #fff; border-radius: 8px; font-size: 16px; font-weight: 800; }
+  .paid { display: inline-block; margin-top: 10px; padding: 4px 12px; border-radius: 999px; background: #ECFDF5; color: #047857; font-size: 12px; font-weight: 700; }
+  footer { margin-top: auto; padding-top: 18px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--grey); line-height: 1.6; }
+  footer .cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; }
+  footer strong { color: var(--navy); }
+  .placeholder { background: #FEF3C7; color: #92400E; padding: 0 4px; border-radius: 3px; }
+  .note { width: 210mm; margin: 0 auto 24px; font-size: 13px; color: var(--grey); }
+  @media print { body { background: #fff; } .page { margin: 0; box-shadow: none; } .note { display: none; } }
+</style>
+</head>
+<body>
+  <p class="note">Preview with sample booking data. Highlighted fields are placeholders until the company number and registered address are supplied. The VAT number line only appears when a VAT number is set.</p>
+
+  <div class="page">
+    <header>
+      <div class="logo">
+        <img src="https://www.vencome.com/logo-blue.png" alt="VenCome">
+        <p class="tagline">Commercial spaces booked simply</p>
+      </div>
+      <div class="title">
+        <h1>INVOICE</h1>
+        <p>VC-4F2A91C7</p>
+      </div>
+    </header>
+
+    <div class="meta">
+      <div><p class="label">Invoice number</p><p class="value">VC-4F2A91C7</p></div>
+      <div><p class="label">Issue date</p><p class="value">4 November 2026</p></div>
+      <div><p class="label">Booking reference</p><p class="value">4F2A91C7</p></div>
+    </div>
+
+    <div class="parties">
+      <div>
+        <p class="label">From</p>
+        <p><strong>Vencome Ltd</strong><br>
+        Company no. <span class="placeholder">00000000</span><br>
+        <span class="placeholder">Registered address, London</span><br>
+        support@vencome.com<br>
+        VAT no. <span class="placeholder">GB 000 0000 00</span></p>
+      </div>
+      <div>
+        <p class="label">Billed to (customer)</p>
+        <p><strong>Sam Taylor</strong><br>
+        Taylor Design Studio Ltd<br>
+        sam@example.com</p>
+      </div>
+      <div>
+        <p class="label">Host</p>
+        <p><strong>Acme Workspaces</strong><br>
+        Private two desk office<br>
+        12 Example Street, London</p>
+      </div>
+    </div>
+
+    <p class="booking">Booking: <strong>Private two desk office</strong> · Mon 2 Nov 2026 – Fri 6 Nov 2026 · 5 days</p>
+
+    <table>
+      <thead>
+        <tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Space hire (core price)<small>Private two desk office, per day</small></td><td class="num">5</td><td class="num">£100.00</td><td class="num">£500.00</td></tr>
+        <tr><td>Utilities<small>Per day</small></td><td class="num">5</td><td class="num">£10.00</td><td class="num">£50.00</td></tr>
+        <tr><td>Service fee</td><td class="num">1</td><td class="num">£0.00</td><td class="num">£0.00</td></tr>
+      </tbody>
+    </table>
+
+    <div class="totals">
+      <div><span>Subtotal (ex VAT)</span><span>£550.00</span></div>
+      <div><span>VAT at 20%</span><span>£110.00</span></div>
+      <div class="grand"><span>Total</span><span>£660.00</span></div>
+      <div style="justify-content:flex-end;padding:0;"><span class="paid">Paid 1 Nov 2026 · Visa •••• 4242</span></div>
+    </div>
+
+    <footer>
+      <div class="cols">
+        <div>
+          <strong>Payment terms.</strong> Paid in full by card at booking. Payment is held securely by VenCome and released to the host after the booking, in line with VenCome's terms. Cancellations are refunded according to the cancellation policy shown at booking.
+        </div>
+        <div>
+          <strong>Questions about this invoice?</strong><br>
+          support@vencome.com<br>
+          www.vencome.com
+        </div>
+      </div>
+      <p style="margin:12px 0 0;">Vencome Ltd · Registered in England and Wales · Company no. <span class="placeholder">00000000</span></p>
+    </footer>
+  </div>
+</body>
+</html>

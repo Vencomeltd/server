@@ -40,6 +40,7 @@ router.post("/", auth, async (req, res) => {
     const { title, step, coverImage, formData } = req.body;
     const draft = await Draft.create({
       host: req.user.id,
+      createdBy: req.user.impersonatedBy || req.user.id,
       title: title || "Untitled space",
       step: step || 1,
       coverImage: coverImage || "",

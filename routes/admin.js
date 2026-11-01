@@ -8,6 +8,8 @@ const User = require("../models/User");
 const Booking = require("../models/Booking");
 const Property = require("../models/Property");
 const Draft = require("../models/Draft");
+const EmailTemplate = require("../models/EmailTemplate");
+const { TEMPLATES: EMAIL_TEMPLATES, renderEmail, clearTemplateCache, blocks: emailBlocks } = require("../utils/emailTemplates");
 const ProspectEmail = require("../models/ProspectEmail");
 const Report = require("../models/Report");
 const SupportTicket = require("../models/SupportTicket");
@@ -644,6 +646,24 @@ router.delete("/users/:id", async (req, res) => {
   }
 });
 
+// PATCH /users/:id/flag -- { flag: "test" | "internal" | null }. A flagged
+// account is left out of every admin total and chart (isTestAccount); the
+// flag says why. null unflags it.
+router.patch("/users/:id/flag", async (req, res) => {
+  try {
+    const { flag } = req.body;
+    if (![null, "test", "internal"].includes(flag)) return res.status(400).json({ error: "Invalid flag" });
+    const update = flag ? { $set: { isTestAccount: true, accountFlag: flag } } : { $set: { isTestAccount: false }, $unset: { accountFlag: "" } };
+    const user = await User.findByIdAndUpdate(req.params.id, update, { new: true }).select("email isTestAccount accountFlag");
+    if (!user) return res.status(404).json({ error: "User not found" });
+    console.log(`[Audit] Admin ${req.user.id} flagged user ${user._id} (${user.email}) as ${flag || "real"}`);
+    res.json({ success: true, isTestAccount: user.isTestAccount, accountFlag: user.accountFlag || null });
+  } catch (err) {
+    console.error("Admin flag user error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // General account-detail editor for admin -- deliberately scoped to plain
 // identity fields only. Role/permission changes (isAdmin, isHost, ban)
 // already have their own dedicated endpoints above; phoneNumber is
@@ -843,9 +863,35 @@ router.patch("/support-tickets/:id", async (req, res) => {
 });
 
 // ─── Properties ───────────────────────────────────────────────────────────────
+// The admin listings status tabs. Drafts aren't listings yet -- they live in
+// the Draft collection (GET /drafts below) -- so they're counted separately.
+const LISTING_STATUS = {
+  active: { isActive: true },
+  inactive: { isActive: { $ne: true }, moderationStatus: { $ne: "pending_review" } },
+  pending: { isActive: { $ne: true }, moderationStatus: "pending_review" },
+};
+const testHostFilter = async () => ({ $nin: await User.find({ isTestAccount: true }).distinct("_id") });
+
+// GET /properties/counts?excludeTest=true -- each status tab's total. "active"
+// is the number the Overview shows as listings.
+router.get("/properties/counts", async (req, res) => {
+  try {
+    const hostFilter = req.query.excludeTest === "true" ? { host: await testHostFilter() } : {};
+    const [all, active, inactive, pending, draft] = await Promise.all([
+      Property.countDocuments(hostFilter),
+      ...["active", "inactive", "pending"].map((status) => Property.countDocuments({ ...LISTING_STATUS[status], ...hostFilter })),
+      Draft.countDocuments(hostFilter),
+    ]);
+    res.json({ all, active, inactive, pending, draft });
+  } catch (err) {
+    console.error("Admin listing counts error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 router.get("/properties", async (req, res) => {
-  const { page = 1, limit = 20, q, moderationStatus, excludeTest } = req.query;
-  const filter = {};
+  const { page = 1, limit = 20, q, moderationStatus, excludeTest, status } = req.query;
+  const filter = { ...(LISTING_STATUS[status] || {}) };
   if (q) filter.title = { $regex: q, $options: "i" };
   // Lets the moderation queue query platform-wide regardless of whatever
   // page the main "all listings" browser happens to be on, instead of the
@@ -854,13 +900,13 @@ router.get("/properties", async (req, res) => {
   // Opt-in only, same reasoning as GET /users's excludeTest -- the
   // browsable listings table should still show test hosts' listings, but
   // the "Total Listings" summary count asks for this explicitly.
-  if (excludeTest === "true") {
-    const testUserIds = await User.find({ isTestAccount: true }).distinct("_id");
-    filter.host = { $nin: testUserIds };
-  }
+  if (excludeTest === "true") filter.host = await testHostFilter();
   const skip = (parseInt(page) - 1) * parseInt(limit);
   const [properties, total] = await Promise.all([
-    Property.find(filter).populate("host", "firstName lastName email displayName").populate("category", "name").sort({ order: 1, createdAt: -1 }).skip(skip).limit(parseInt(limit)),
+    Property.find(filter)
+      .populate("host", "firstName lastName email displayName businessVerification.companyName isTestAccount accountFlag")
+      .populate("createdBy", "firstName lastName email displayName")
+      .populate("category", "name").sort({ order: 1, createdAt: -1 }).skip(skip).limit(parseInt(limit)),
     Property.countDocuments(filter),
   ]);
   res.json({ properties, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
@@ -872,22 +918,41 @@ router.get("/properties", async (req, res) => {
 // published the listing (see the draftId fix in POST /properties) can be
 // removed with DELETE below.
 router.get("/drafts", async (req, res) => {
-  const { page = 1, limit = 20 } = req.query;
+  const { page = 1, limit = 20, excludeTest } = req.query;
+  const filter = excludeTest === "true" ? { host: await testHostFilter() } : {};
   const skip = (parseInt(page) - 1) * parseInt(limit);
   const [drafts, total] = await Promise.all([
-    Draft.find({})
-      .populate("host", "firstName lastName email displayName")
+    Draft.find(filter)
+      .select("-formData")
+      .populate("host", "firstName lastName email displayName businessVerification.companyName isTestAccount accountFlag")
+      .populate("createdBy", "firstName lastName email displayName")
       .sort({ createdAt: 1 })
       .skip(skip)
       .limit(parseInt(limit)),
-    Draft.countDocuments({}),
+    Draft.countDocuments(filter),
   ]);
   res.json({ drafts, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
+});
+
+// GET /drafts/:id -- one draft in full (everything the host has entered so
+// far, photos included), so admin can see it without a public page.
+router.get("/drafts/:id", async (req, res) => {
+  try {
+    const draft = await Draft.findById(req.params.id)
+      .populate("host", "firstName lastName email displayName businessVerification.companyName")
+      .populate("createdBy", "firstName lastName email displayName");
+    if (!draft) return res.status(404).json({ error: "Draft not found" });
+    res.json({ draft });
+  } catch (err) {
+    console.error("Admin draft detail error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 router.delete("/drafts/:id", async (req, res) => {
   const draft = await Draft.findByIdAndDelete(req.params.id);
   if (!draft) return res.status(404).json({ error: "Draft not found" });
+  console.log(`[Audit] Admin ${req.user.id} deleted draft ${draft._id} "${draft.title}" (host ${draft.host})`);
   res.json({ success: true });
 });
 
@@ -895,10 +960,62 @@ router.delete("/drafts/:id", async (req, res) => {
 // since this feature was added, newest first. "search" matches the
 // recipient address or, if it resolves to a platform user, their name too.
 router.get("/emails", async (req, res) => {
-  const { search, status, page = 1, limit = 25 } = req.query;
+  const filter = await emailLogFilter(req.query);
+  const { page = 1, limit = 25 } = req.query;
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+  const [emails, total] = await Promise.all([
+    EmailLog.find(filter)
+      .populate("toUser", "firstName lastName displayName email isHost")
+      .sort({ sentAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit)),
+    EmailLog.countDocuments(filter),
+  ]);
+  res.json({ emails, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
+});
+
+// GET /emails/calendar?month=2026-11 (+ the same filters) -- emails sent per
+// day of that month (UK days), for the Communications calendar view.
+router.get("/emails/calendar", async (req, res) => {
+  try {
+    const [year, month] = String(req.query.month || "").split("-").map(Number);
+    if (!year || !month) return res.status(400).json({ error: "month=YYYY-MM is required" });
+    const filter = await emailLogFilter({ ...req.query, from: undefined, to: undefined });
+    filter.sentAt = { $gte: new Date(Date.UTC(year, month - 1, 1) - 3600000), $lt: new Date(Date.UTC(year, month, 1) + 3600000) };
+    const days = await EmailLog.aggregate([
+      { $match: filter },
+      { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$sentAt", timezone: "Europe/London" } }, count: { $sum: 1 } } },
+    ]);
+    const prefix = `${year}-${String(month).padStart(2, "0")}`;
+    res.json({ days: Object.fromEntries(days.filter((d) => d._id.startsWith(prefix)).map((d) => [d._id, d.count])) });
+  } catch (err) {
+    console.error("Email calendar error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Filters for the Communications log: search (recipient), status,
+// audience (hosts | customers), type (transactional | reminder | broadcast),
+// from / to (YYYY-MM-DD, UK days, inclusive).
+async function emailLogFilter({ search, status, audience, type, from, to }) {
   const filter = {};
   if (status) filter.status = status;
-
+  if (type === "transactional") filter.category = { $in: ["transactional", null] };
+  else if (["reminder", "broadcast"].includes(type)) filter.category = type;
+  if (audience === "hosts" || audience === "customers") {
+    const ids = await User.distinct("_id", audience === "hosts" ? { isHost: true } : { isHost: { $ne: true } });
+    filter.toUser = { $in: ids };
+  }
+  const ukMidnight = (day) => {
+    const utc = new Date(`${day}T00:00:00Z`);
+    const offset = new Date(utc.toLocaleString("en-US", { timeZone: "Europe/London" })) - new Date(utc.toLocaleString("en-US", { timeZone: "UTC" }));
+    return new Date(utc.getTime() - offset);
+  };
+  if (from || to) {
+    filter.sentAt = {};
+    if (from) filter.sentAt.$gte = ukMidnight(from);
+    if (to) filter.sentAt.$lt = new Date(ukMidnight(to).getTime() + 24 * 3600000);
+  }
   if (search) {
     const matchingUsers = await User.find({
       $or: [
@@ -914,18 +1031,8 @@ router.get("/emails", async (req, res) => {
       { toUser: { $in: matchingUsers.map((u) => u._id) } },
     ];
   }
-
-  const skip = (parseInt(page) - 1) * parseInt(limit);
-  const [emails, total] = await Promise.all([
-    EmailLog.find(filter)
-      .populate("toUser", "firstName lastName displayName email isHost")
-      .sort({ sentAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit)),
-    EmailLog.countDocuments(filter),
-  ]);
-  res.json({ emails, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
-});
+  return filter;
+}
 
 // Prospect emails left on ServiceLocationPage.jsx's "coming soon" state,
 // grouped by territory (location + subcategory) so admin can see at a
@@ -1102,6 +1209,13 @@ router.get("/bookings", async (req, res) => {
     const status = req.query.status;
 
     const query = status && status !== "all" ? { status } : {};
+    // Same opt-in as GET /users and /properties: the dashboard's totals ask
+    // to leave test and internal accounts' bookings out.
+    if (req.query.excludeTest === "true") {
+      const testUserIds = await User.find({ isTestAccount: true }).distinct("_id");
+      query.guest = { $nin: testUserIds };
+      query.host = { $nin: testUserIds };
+    }
 
     const [bookings, total] = await Promise.all([
       Booking.find(query)
@@ -1316,23 +1430,13 @@ async function sendBroadcastNow(broadcast) {
     throw new Error("No users found for this target");
   }
 
-  const emailPromises = users.map((user) => {
-    const name = user.displayName || user.firstName || "there";
-    return sendEmail({
-      to: user.email,
-      subject: broadcast.subject,
-      html: `
-        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
-          <img src="https://vencome.com/VenCome.jpg" alt="VenCome" style="height:40px;margin-bottom:24px;" />
-          <p>Hi ${name},</p>
-          <div style="font-size:15px;line-height:1.7;color:#374151;">
-            ${broadcast.message.replace(/\n/g, "<br/>")}
-          </div>
-          <hr style="border:none;border-top:1px solid #E5E7EB;margin:24px 0;" />
-          <p style="font-size:12px;color:#9CA3AF;">You received this email because you are a registered VenCome user. © ${new Date().getFullYear()} VenCome</p>
-        </div>
-      `,
-    }).catch((err) => console.error(`Failed to send to ${user.email}:`, err.message));
+  const emailPromises = users.map(async (user) => {
+    const email = await renderEmail(
+      "broadcast",
+      { firstName: user.displayName || user.firstName || "there", message: broadcast.message, subject: broadcast.subject },
+      { footer: "You received this email because you are a registered VenCome user." }
+    );
+    return sendEmail({ to: user.email, ...email, category: "broadcast" }).catch((err) => console.error(`Failed to send to ${user.email}:`, err.message));
   });
 
   await Promise.allSettled(emailPromises);
@@ -1410,6 +1514,118 @@ router.delete("/broadcast/:id", async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ─── System email templates (utils/emailTemplates.js) ───────────────────────
+// GET -- every template with its default and current wording.
+router.get("/email-templates", async (req, res) => {
+  try {
+    const saved = Object.fromEntries((await EmailTemplate.find().populate("updatedBy", "firstName lastName email")).map((t) => [t.key, t]));
+    res.json({
+      templates: Object.entries(EMAIL_TEMPLATES).map(([key, def]) => ({
+        key,
+        name: def.name,
+        description: def.description,
+        variables: Object.keys(def.variables),
+        default: { subject: def.subject, heading: def.heading, body: def.body },
+        current: saved[key] ? { subject: saved[key].subject, heading: saved[key].heading, body: saved[key].body } : null,
+        updatedAt: saved[key]?.updatedAt,
+        updatedBy: saved[key]?.updatedBy,
+      })),
+    });
+  } catch (err) {
+    console.error("List email templates error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+const templateDraft = (body) => ({
+  subject: String(body.subject || "").trim(),
+  heading: String(body.heading ?? ""),
+  body: String(body.body || "").trim(),
+});
+
+// PUT /:key -- save an edited version.
+router.put("/email-templates/:key", async (req, res) => {
+  try {
+    if (!EMAIL_TEMPLATES[req.params.key]) return res.status(404).json({ error: "Unknown template" });
+    const draft = templateDraft(req.body);
+    if (!draft.subject || !draft.body) return res.status(400).json({ error: "Subject and body are required" });
+    await EmailTemplate.findOneAndUpdate({ key: req.params.key }, { ...draft, updatedBy: req.user.id }, { upsert: true });
+    clearTemplateCache();
+    console.log(`[Audit] Admin ${req.user.id} edited email template ${req.params.key}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Save email template error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// DELETE /:key -- reset to the default wording.
+router.delete("/email-templates/:key", async (req, res) => {
+  try {
+    await EmailTemplate.deleteOne({ key: req.params.key });
+    clearTemplateCache();
+    console.log(`[Audit] Admin ${req.user.id} reset email template ${req.params.key} to default`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Reset email template error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Sample values for preview / test: each variable's example, with the
+// layout blocks (details table, buttons, code) filled in.
+function sampleVars(key) {
+  const vars = { ...EMAIL_TEMPLATES[key].variables };
+  if ("code" in vars) vars.code = emailBlocks.code("123456");
+  if ("details" in vars) vars.details = emailBlocks.details([["Space", "Private two desk office"], ["Dates", "Wed 4 Nov 2026, 09:00–17:00"], ["Total", "£120.00"]]);
+  if ("button" in vars) vars.button = emailBlocks.button("https://www.vencome.com", "View on VenCome");
+  if ("actionButtons" in vars) vars.actionButtons = emailBlocks.button("https://www.vencome.com/dashboard/bookings", "Approve or decline");
+  return vars;
+}
+
+// POST /:key/preview -- { subject, heading, body } (unsaved edits) -> the email.
+router.post("/email-templates/:key/preview", async (req, res) => {
+  try {
+    if (!EMAIL_TEMPLATES[req.params.key]) return res.status(404).json({ error: "Unknown template" });
+    res.json(await renderEmail(req.params.key, sampleVars(req.params.key), { draft: templateDraft(req.body) }));
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST /:key/test -- send the (unsaved) version to the signed-in admin.
+router.post("/email-templates/:key/test", async (req, res) => {
+  try {
+    if (!EMAIL_TEMPLATES[req.params.key]) return res.status(404).json({ error: "Unknown template" });
+    const admin = await User.findById(req.user.id).select("email");
+    const email = await renderEmail(req.params.key, sampleVars(req.params.key), { draft: templateDraft(req.body) });
+    await sendEmail({ to: admin.email, subject: `[Test] ${email.subject}`, html: email.html });
+    res.json({ success: true, sentTo: admin.email });
+  } catch (err) {
+    console.error("Test email error:", err);
+    res.status(500).json({ error: "Couldn't send the test email" });
+  }
+});
+
+// POST /broadcast/test -- a broadcast (unsent) to the signed-in admin first.
+router.post("/broadcast/test", async (req, res) => {
+  try {
+    const { subject, message } = req.body;
+    if (!subject || !message) return res.status(400).json({ error: "Subject and message are required" });
+    const admin = await User.findById(req.user.id).select("email firstName displayName");
+    const email = await renderEmail(
+      "broadcast",
+      { firstName: admin.displayName || admin.firstName || "there", message, subject },
+      { footer: "You received this email because you are a registered VenCome user." }
+    );
+    await sendEmail({ to: admin.email, ...email, subject: `[Test] ${email.subject}` });
+    res.json({ success: true, sentTo: admin.email });
+  } catch (err) {
+    console.error("Broadcast test error:", err);
+    res.status(500).json({ error: "Couldn't send the test email" });
   }
 });
 

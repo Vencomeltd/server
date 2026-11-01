@@ -17,6 +17,7 @@ const auth = (req, _res, next) => {
 auth.blockDuringImpersonation = (_req, _res, next) => next();
 stub("../middleware/auth", auth);
 stub("../utils/commission", { resolveCommissionRate: async () => 0.1 });
+require("../models/PlatformSettings").getSettings = async () => ({ commissionBase: "core" });
 
 const Booking = require("../models/Booking");
 const Property = require("../models/Property");

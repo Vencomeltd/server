@@ -70,7 +70,7 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 // Best-effort write to the Communications-tab log. Never allowed to break
 // the actual send — required lazily so this file has no load-order
 // dependency on the Mongoose connection being open yet.
-const logEmail = async ({ to, subject, text, html, status, errorMessage }) => {
+const logEmail = async ({ to, subject, text, html, status, errorMessage, category }) => {
   try {
     const EmailLog = require("../models/EmailLog");
     const User = require("../models/User");
@@ -83,13 +83,16 @@ const logEmail = async ({ to, subject, text, html, status, errorMessage }) => {
       html,
       status,
       errorMessage: errorMessage || "",
+      ...(category && { category }),
     });
   } catch (logErr) {
     console.error("EmailLog write failed:", logErr.message);
   }
 };
 
-const sendEmail = async ({ to, subject, text, html, attachments = [] }) => {
+// category: "transactional" (default), "reminder" or "broadcast" -- for the
+// admin Communications log filters.
+const sendEmail = async ({ to, subject, text, html, attachments = [], category }) => {
   try {
     const msg = {
       to,
@@ -112,10 +115,10 @@ const sendEmail = async ({ to, subject, text, html, attachments = [] }) => {
     }
 
     await sgMail.send(msg);
-    logEmail({ to, subject, text, html, status: "sent" });
+    logEmail({ to, subject, text, html, status: "sent", category });
   } catch (err) {
     console.error("Error sending email:", err.response?.body || err.message);
-    logEmail({ to, subject, text, html, status: "failed", errorMessage: err.message });
+    logEmail({ to, subject, text, html, status: "failed", errorMessage: err.message, category });
     throw err; // bubble up errors (important for APIs)
   }
 };

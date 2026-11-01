@@ -24,6 +24,9 @@ const platformSettingsSchema = new mongoose.Schema(
     // commissionOverrideActive). ANNUAL (3%) and MONTHLY (6%) stay fixed —
     // this only replaces the old hardcoded 10% "everything else" tier.
     defaultCommissionRate: { type: Number, default: 10, min: 0, max: 100 },
+    // What commission is taken from: the core price only (default), or core
+    // plus utilities. Never VAT. (Spec 31 Oct 1.3 -- client's choice pending.)
+    commissionBase: { type: String, enum: ["core", "core_plus_utilities"], default: "core" },
   },
   { timestamps: true }
 );

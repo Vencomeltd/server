@@ -16,7 +16,7 @@ router.get("/conversations", auth, async (req, res) => {
     const conversations = await Conversation.find({
       $or: [{ host: userId }, { guest: userId }],
     })
-      .populate("host", "firstName lastName displayName profileImage name email")
+      .populate("host", "firstName lastName displayName profileImage name email businessVerification.companyName accountFlag")
       .populate("guest", "firstName lastName displayName profileImage name email")
       .populate("property", "title coverImage")
       .sort({ lastMessageAt: -1 });
@@ -63,7 +63,7 @@ router.get("/property/:propertyId", auth, async (req, res) => {
       property: propertyId,
       guest: guestId,
     })
-      .populate("host", "firstName lastName displayName profileImage name email")
+      .populate("host", "firstName lastName displayName profileImage name email businessVerification.companyName accountFlag")
       .populate("guest", "firstName lastName displayName profileImage name email")
       .populate("property", "title coverImage");
 
@@ -79,7 +79,7 @@ router.get("/property/:propertyId", auth, async (req, res) => {
       });
       await conversation.save();
       await conversation.populate([
-        { path: "host", select: "firstName lastName displayName profileImage name email" },
+        { path: "host", select: "firstName lastName displayName profileImage name email businessVerification.companyName accountFlag" },
         { path: "guest", select: "firstName lastName displayName profileImage name email" },
         { path: "property", select: "title coverImage" },
       ]);
@@ -116,7 +116,7 @@ router.get("/booking/:bookingId", auth, async (req, res) => {
       guest: booking.guest,
       host: booking.host,
     })
-      .populate("host", "firstName lastName displayName profileImage name email")
+      .populate("host", "firstName lastName displayName profileImage name email businessVerification.companyName accountFlag")
       .populate("guest", "firstName lastName displayName profileImage name email")
       .populate("property", "title coverImage");
 
@@ -129,7 +129,7 @@ router.get("/booking/:bookingId", auth, async (req, res) => {
       });
       await conversation.save();
       await conversation.populate([
-        { path: "host", select: "firstName lastName displayName profileImage name email" },
+        { path: "host", select: "firstName lastName displayName profileImage name email businessVerification.companyName accountFlag" },
         { path: "guest", select: "firstName lastName displayName profileImage name email" },
         { path: "property", select: "title coverImage" },
       ]);
@@ -158,7 +158,7 @@ router.post("/enquiry", auth, async (req, res) => {
       });
     }
 
-    const property = await Property.findById(propertyId).populate("host", "firstName lastName displayName profileImage name email");
+    const property = await Property.findById(propertyId).populate("host", "firstName lastName displayName profileImage name email businessVerification.companyName accountFlag");
     if (!property) return res.status(404).json({ error: "Property not found" });
 
     // Find existing conversation or create new one
@@ -209,7 +209,7 @@ router.get("/:conversationId", auth, async (req, res) => {
     const userId = req.user.id;
 
     const conversation = await Conversation.findById(conversationId)
-      .populate("host", "firstName lastName displayName profileImage name email")
+      .populate("host", "firstName lastName displayName profileImage name email businessVerification.companyName accountFlag")
       .populate("guest", "firstName lastName displayName profileImage name email")
       .populate("property", "title coverImage location");
 

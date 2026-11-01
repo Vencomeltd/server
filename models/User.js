@@ -103,6 +103,18 @@ const userSchema = new mongoose.Schema(
     // sees as real platform activity. Never set from client-facing signup;
     // admin-only, set directly in the database.
     isTestAccount: { type: Boolean, default: false },
+    // Why isTestAccount is set, shown in admin: a QA/throwaway account
+    // ("test") or a team/developer account ("internal"). Both are excluded
+    // the same way. Set from the admin user row menu (PATCH
+    // /admin/users/:id/flag); unset on accounts that aren't flagged.
+    accountFlag: { type: String, enum: ["test", "internal"] },
+    // "Verify your account" reminders (utils/verifyReminders.js).
+    verifyReminders: {
+      sentAt: [Date],
+      lastSentAt: Date,
+      optedOut: Boolean,
+      optedOutAt: Date,
+    },
     // Set only when an admin creates this account directly (see
     // POST /admin/users/create-host) instead of the user signing up
     // themselves -- the audit trail the client asked this feature to have.

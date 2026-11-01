@@ -96,6 +96,19 @@ const bookingSchema = new mongoose.Schema(
     escrowReleased: { type: Boolean, default: false },
     platformFee: { type: Number, default: 0 },
     hostAmount: { type: Number, default: 0 },
+    // Core / utilities / VAT split of totalPrice, and the commission taken
+    // from the core (utils/vatPricing.js quote). Unset on bookings made
+    // before VAT pricing -- their totalPrice was all core.
+    pricingBreakdown: {
+      corePence: Number,
+      utilitiesPence: Number,
+      vatStatus: String,
+      vatRatePct: Number,
+      vatPence: Number,
+      totalPence: Number,
+      commissionPence: Number,
+      hostPayoutPence: Number,
+    },
     licensePdfUrl: {
       type: String,
       default: null,
@@ -216,6 +229,33 @@ const bookingSchema = new mongoose.Schema(
         },
       ],
     },
+    // A lease (Property.pricing.minimumTermMonths): one booking per month,
+    // sharing a groupId. Month 1 is paid at checkout; each later month is
+    // charged to the saved card before it starts (utils/paymentsV2/lease.js).
+    lease: {
+      months: Number,
+      minimumMonths: Number,
+      index: Number, // 1-based month of the lease this booking is
+      // Month 1 paid or authorised: from then on every month holds its dates
+      // even though it isn't paid yet.
+      securedAt: Date,
+      customerId: String,
+      paymentMethodId: String,
+      chargeAt: Date,
+      chargeStatus: { type: String, enum: ["scheduled", "paid", "failed", "awaiting_decision", "stopped"] },
+      attempts: { type: Number, default: 0 },
+      nextRetryAt: Date,
+      lastError: String,
+      // Admin actions on the lease (retry, end), on its first month.
+      audit: [
+        {
+          at: { type: Date, default: Date.now },
+          by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          action: String,
+          note: String,
+        },
+      ],
+    },
     reviewed: { type: Boolean, default: false },
     completed: { type: Boolean, default: false },
     review: { type: mongoose.Schema.Types.ObjectId, ref: "Review" },
@@ -241,5 +281,6 @@ bookingSchema.index({ "depositHold.status": 1, "depositHold.holdAt": 1 });
 bookingSchema.index({ "depositHold.status": 1, "depositHold.captureBefore": 1 });
 bookingSchema.index({ "payment.status": 1, checkOut: 1 });
 bookingSchema.index({ "payment.paymentIntentId": 1 });
+bookingSchema.index({ "lease.chargeStatus": 1, "lease.chargeAt": 1 });
 
 module.exports = mongoose.model("Booking", bookingSchema);

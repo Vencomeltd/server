@@ -20,8 +20,11 @@ const {
   occupyingBookingFilter,
 } = require("../utils/unitAvailability");
 const { cancelUnpaidBookings } = require("../utils/bookingHold");
-const { sendSeriesDecisionEmail } = require("../utils/bookingNotifications");
+const { sendSeriesDecisionEmail, breakdownRows, openingHoursRows } = require("../utils/bookingNotifications");
+const { renderEmail, blocks: emailBlocks } = require("../utils/emailTemplates");
 const { recurringDays, ukDay, ukMinutes } = require("../utils/recurrence");
+const { quote: quotePrice, TAX_KEY } = require("../utils/vatPricing");
+const PlatformSettings = require("../models/PlatformSettings");
 const {
   calculateDailyPriceWithBreakdown,
   calculateHourlyPriceWithBreakdown,
@@ -130,6 +133,7 @@ async function createBooking({
   extras,
   licensePdfUrl,
   groupId,
+  lease,
   dryRun,
 }) {
   // The checks below were written inside the route handler; this stand-in
@@ -208,7 +212,9 @@ async function createBooking({
 
   // 5b. Check open days — if host has set specific days,
   // all booking days must be within those days
-  const availOpenDays = property.availability?.openDays || [];
+  // A lease month spans every day of the month, closed days included -- the
+  // tenant has the space for the whole month.
+  const availOpenDays = lease ? [] : property.availability?.openDays || [];
   if (availOpenDays.length > 0) {
     const DAY_MAP = {
       sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
@@ -437,10 +443,25 @@ async function createBooking({
   // Commission rate: fixed for ANNUAL/MONTHLY, otherwise the platform
   // default unless the property's market has an active override — see
   // utils/commission.js and the admin Commission Settings page.
-  const commissionRate = await resolveCommissionRate(effectivePricingType, property);
+  const commissionRate = await resolveCommissionRate(effectivePricingType, property, {
+    termMonths: lease?.months || totalUnits,
+  });
 
-  const platformFee = Math.round(totalPrice * commissionRate * 100) / 100;
-  const hostAmount = Math.round((totalPrice - platformFee) * 100) / 100;
+  // totalPrice so far is the core price (ex VAT). Add utilities and VAT
+  // from the listing's settings for this unit, and take commission from the
+  // core only -- utils/vatPricing.js, the same function the site shows.
+  // A listing with no VAT settings comes out exactly as before.
+  const { commissionBase } = await PlatformSettings.getSettings();
+  const pricingBreakdown = quotePrice({
+    corePence: Math.round(totalPrice * 100),
+    quantity: totalUnits,
+    tax: property.pricing?.vat?.[TAX_KEY[effectivePricingType]],
+    commissionRate,
+    commissionBase,
+  });
+  totalPrice = pricingBreakdown.totalPence / 100;
+  const platformFee = pricingBreakdown.commissionPence / 100;
+  const hostAmount = pricingBreakdown.hostPayoutPence / 100;
 
   // 9. Create booking
   const isInstantBook = Boolean(property.bookingSettings?.instantBook);
@@ -461,6 +482,7 @@ async function createBooking({
     totalPrice,
     platformFee,
     hostAmount,
+    pricingBreakdown,
     // Optional security deposit, charged alongside rent as a second
     // Stripe Checkout line item (see routes/payments.js) but kept
     // entirely separate from totalPrice/platformFee/hostAmount above --
@@ -514,6 +536,18 @@ async function createBooking({
   });
 
   if (groupId) booking.groupId = groupId;
+  if (lease) {
+    booking.lease = {
+      months: lease.months,
+      minimumMonths: lease.minimumMonths,
+      index: lease.index,
+      // Month 1 is paid at checkout; the rest are charged before they start.
+      ...(lease.index > 1 && {
+        chargeStatus: "scheduled",
+        chargeAt: new Date(checkInDate.getTime() - PAYMENTS_CONFIG.leaseChargeLeadDays * 24 * 60 * 60 * 1000),
+      }),
+    };
+  }
   if (dryRun) return { status: 200, body: booking };
   await booking.save();
   await booking.populate(["guest", "property", "host"]);
@@ -685,35 +719,92 @@ router.post("/group", auth, async (req, res) => {
       }
     }
 
-    const base = { guestId, propertyId, guests, pricingUnit, extras: [] };
-    const failed = (range, result) =>
-      res.status(result.status).json({
-        error: `${seriesDateLabel(range.checkIn)}: ${result.body.error}`,
-        failedDate: range.checkIn,
-      });
-
-    for (const range of ranges) {
-      const result = await createBooking({ ...base, ...range, dryRun: true });
-      if (result.status >= 400) return failed(range, result);
-    }
-
     groupId = randomUUID();
-    const bookings = [];
-    for (const range of ranges) {
-      const result = await createBooking({ ...base, ...range, groupId });
-      if (result.status >= 400) {
-        // Someone took this date between the check and now -- undo the rest.
-        await cancelUnpaidBookings({ groupId });
-        return failed(range, result);
-      }
-      bookings.push(result.body);
-    }
-
-    res.status(201).json({ groupId, bookings });
+    const result = await createSeries({ guestId, propertyId, guests, pricingUnit, extras: [] }, ranges, groupId);
+    if (result.error) return res.status(result.status).json(result.error);
+    res.status(201).json({ groupId, bookings: result.bookings });
   } catch (err) {
     if (groupId) await cancelUnpaidBookings({ groupId }).catch(() => {});
     console.error("Series booking failed:", err.message, err.stack);
     res.status(500).json({ error: "Could not create these bookings" });
+  }
+});
+
+// Checks every range before saving any, then saves them all under groupId.
+// `rangeExtra(index)` adds per-booking fields (a lease's month number).
+// Returns { bookings } or { status, error }.
+async function createSeries(base, ranges, groupId, rangeExtra = () => ({})) {
+  const failed = (range, result) => ({
+    status: result.status,
+    error: { error: `${seriesDateLabel(range.checkIn)}: ${result.body.error}`, failedDate: range.checkIn },
+  });
+
+  for (const [index, range] of ranges.entries()) {
+    const result = await createBooking({ ...base, ...range, ...rangeExtra(index), dryRun: true });
+    if (result.status >= 400) return failed(range, result);
+  }
+
+  const bookings = [];
+  for (const [index, range] of ranges.entries()) {
+    const result = await createBooking({ ...base, ...range, ...rangeExtra(index), groupId });
+    if (result.status >= 400) {
+      // Someone took this date between the check and now -- undo the rest.
+      await cancelUnpaidBookings({ groupId });
+      return failed(range, result);
+    }
+    bookings.push(result.body);
+  }
+  return { bookings };
+}
+
+// The same day `months` months later, or the month's last day if it's shorter
+// (a lease from 31 Jan runs to 28/29 Feb, then 31 Mar).
+function addMonths(date, months) {
+  const d = new Date(date);
+  const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, 1, d.getUTCHours(), d.getUTCMinutes()));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(d.getUTCDate(), lastDay));
+  return target;
+}
+
+// Lease: a listing with a minimum term (Property.pricing.minimumTermMonths)
+// is booked for at least that many months and paid month by month -- one
+// booking per month, sharing a groupId. Month 1 is paid at checkout (POST
+// /group/:groupId/payment-intent); the rest are charged to the saved card
+// before each month starts (utils/paymentsV2/lease.js).
+router.post("/lease", auth, async (req, res) => {
+  const { propertyId, startDate, guests, agreedToTerms } = req.body;
+  const months = Number(req.body.months);
+  const start = new Date(startDate);
+  if (isNaN(start)) return res.status(400).json({ error: "Invalid start date" });
+
+  let groupId;
+  try {
+    const property = await Property.findById(propertyId).select("listingTerms pricing.minimumTermMonths");
+    if (!property) return res.status(404).json({ error: "Property not found or unavailable" });
+    const minimumMonths = property.pricing?.minimumTermMonths;
+    if (!(minimumMonths >= 2)) return res.status(400).json({ error: "This space doesn't offer a monthly lease." });
+    if (!Number.isInteger(months) || months < minimumMonths || months > PAYMENTS_CONFIG.leaseMaxMonths) {
+      return res.status(400).json({ error: `Choose between ${minimumMonths} and ${PAYMENTS_CONFIG.leaseMaxMonths} months.` });
+    }
+    if (property.listingTerms?.trim() && String(agreedToTerms) !== "true") {
+      return res.status(400).json({ error: "You must agree to the host's listing terms before booking." });
+    }
+
+    const ranges = Array.from({ length: months }, (_, i) => ({ checkIn: addMonths(start, i), checkOut: addMonths(start, i + 1) }));
+    groupId = randomUUID();
+    const result = await createSeries(
+      { guestId: req.user.id, propertyId, guests, pricingUnit: "month", extras: [] },
+      ranges,
+      groupId,
+      (index) => ({ lease: { months, minimumMonths, index: index + 1 } })
+    );
+    if (result.error) return res.status(result.status).json(result.error);
+    res.status(201).json({ groupId, bookings: result.bookings });
+  } catch (err) {
+    if (groupId) await cancelUnpaidBookings({ groupId }).catch(() => {});
+    console.error("Lease booking failed:", err.message, err.stack);
+    res.status(500).json({ error: "Could not create this lease" });
   }
 });
 
@@ -975,28 +1066,24 @@ async function applyBookingDecision(booking, status, io, { paymentHandled = fals
           contentType: "text/calendar",
         };
 
-        sendEmail({
-          to: guestUser.email,
-          subject: "Your booking has been confirmed 🎉",
-          attachments: [calendarAttachment, ...(invoiceAttachment ? [invoiceAttachment] : [])],
-          html: `
-            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
-              <img src="https://vencome.com/VenCome.jpg" alt="VenCome" style="height:40px;margin-bottom:24px;" />
-              <h2 style="color:#0A1628;">Booking Confirmed 🎉</h2>
-              <p>Hi ${guestName},</p>
-              <p>Great news! The host has confirmed your booking for <strong>${prop?.title || "your space"}</strong>.</p>
-              <table style="width:100%;border-collapse:collapse;margin:20px 0;background:#F8F6F0;border-radius:8px;padding:16px;">
+        const confirmation = await renderEmail("booking_confirmation", {
+          firstName: guestName,
+          spaceName: prop?.title || "your space",
+          details: `<table style="width:100%;border-collapse:collapse;margin:20px 0;background:#F8F6F0;border-radius:8px;padding:16px;">
                 <tr><td style="padding:8px 0;color:#666;">Space</td><td style="padding:8px 0;text-align:right;font-weight:700;">${prop?.title || ""}</td></tr>
                 ${fullAddress ? `<tr><td style="padding:8px 0;color:#666;">Full Address</td><td style="padding:8px 0;text-align:right;font-weight:700;color:#305CDE;">${fullAddress}</td></tr>` : ""}
                 <tr><td style="padding:8px 0;color:#666;">Check-in</td><td style="padding:8px 0;text-align:right;font-weight:700;">${new Date(booking.checkIn).toLocaleDateString()}</td></tr>
                 <tr><td style="padding:8px 0;color:#666;">Check-out</td><td style="padding:8px 0;text-align:right;font-weight:700;">${new Date(booking.checkOut).toLocaleDateString()}</td></tr>
+                ${openingHoursRows([booking], prop?.availability)}
+                ${breakdownRows([booking])}
                 <tr><td style="padding:8px 0;color:#666;">Total Paid</td><td style="padding:8px 0;text-align:right;font-weight:700;">£${booking.totalPrice}</td></tr>
-              </table>
-              <p>Your payment is securely held in escrow and will be released to the host after your booking is completed.</p>
-              <a href="https://www.vencome.com/customer/bookings" style="display:inline-block;padding:14px 28px;background:#305CDE;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;">View My Booking</a>
-              <p style="margin-top:24px;color:#6B7280;font-size:13px;">The VenCome Team</p>
-            </div>
-          `,
+              </table>`,
+          button: emailBlocks.button("https://www.vencome.com/customer/bookings", "View My Booking"),
+        });
+        sendEmail({
+          to: guestUser.email,
+          ...confirmation,
+          attachments: [calendarAttachment, ...(invoiceAttachment ? [invoiceAttachment] : [])],
         });
 
         if (guestUser.phoneNumber && guestUser.isPhoneVerified) {
@@ -1048,7 +1135,7 @@ async function applyDecision(booking, status, io) {
   }
 
   const [property, guestUser] = await Promise.all([
-    Property.findById(booking.property?._id || booking.property).select("title location"),
+    Property.findById(booking.property?._id || booking.property).select("title location availability"),
     User.findById(booking.guest?._id || booking.guest).select("email firstName displayName"),
   ]);
   sendSeriesDecisionEmail(series, property, guestUser, status).catch((err) =>
@@ -1249,6 +1336,16 @@ function getRefundPolicy(policy, checkIn) {
   return { refundPercent, reason };
 }
 
+// Neither guest nor host can cancel a confirmed lease month inside its minimum term
+// online -- VenCome ends the lease (routes/adminLeases.js). A lease still
+// awaiting the host, or months past the minimum, cancel as normal.
+const inLeaseMinimumTerm = (booking) =>
+  Boolean(booking.lease?.securedAt) && booking.status === "confirmed" && booking.lease.index <= booking.lease.minimumMonths;
+const LEASE_CANCEL_BLOCKED = {
+  error: "This month is inside the lease's minimum term, so it can't be cancelled online. Please contact VenCome and we'll help.",
+  contactSupport: true,
+};
+
 // ─── Cancel booking ───────────────────────────────────────────────────────────
 // DELETE /bookings/:id/cancel
 // Accessible by: guest (own booking) or host (their property's booking)
@@ -1266,6 +1363,7 @@ router.get("/:id/cancel-preview", auth, async (req, res) => {
     if (["cancelled", "completed"].includes(booking.status)) {
       return res.status(400).json({ error: `Booking is already ${booking.status}` });
     }
+    if (inLeaseMinimumTerm(booking)) return res.status(403).json(LEASE_CANCEL_BLOCKED);
     if (new Date(booking.checkOut) < new Date()) {
       return res.status(400).json({ error: "This booking has already ended and can no longer be cancelled." });
     }
@@ -1317,6 +1415,8 @@ router.delete("/:id/cancel", auth, async (req, res) => {
         .status(400)
         .json({ error: `Booking is already ${booking.status}` });
     }
+
+    if (inLeaseMinimumTerm(booking)) return res.status(403).json(LEASE_CANCEL_BLOCKED);
 
     // Once the stay is over there's nothing left to cancel or refund by tier
     // (the booking only flips to "completed" at the next midnight run).
@@ -1524,41 +1624,29 @@ router.delete("/:id/cancel", auth, async (req, res) => {
       const title = booking.property?.title || "the space";
       const when = new Date(booking.checkIn).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
       const nameOf = (u) => u?.displayName || u?.firstName || "there";
-      const shell = (heading, body) => `
-        <div style="font-family:'Manrope',Arial,sans-serif;background:#f4f4f7;padding:20px;">
-          <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;">
-            <div style="background:#f0f0f0;padding:20px;text-align:center;"><img src="https://www.vencome.com/logo-blue.png" alt="VenCome" style="max-width:150px;"></div>
-            <div style="padding:30px;color:#333;"><h2 style="color:#305CDE;text-align:center;margin-top:0;">${heading}</h2>${body}</div>
-          </div>
-        </div>`;
       const refundLine =
         booking.refund.amount > 0
-          ? `A refund of <strong>£${booking.refund.amount.toFixed(2)}</strong> (${refundPercent}%) has been issued to the original payment method.`
+          ? `A refund of £${booking.refund.amount.toFixed(2)} (${refundPercent}%) has been issued to the original payment method.`
           : "No payment was taken for this booking, so there is nothing to refund.";
 
       if (guestUser?.email) {
-        sendEmail({
-          to: guestUser.email,
-          subject: "Your booking has been cancelled",
-          html: shell(
-            "Booking cancelled",
-            `<p>Hi <strong>${nameOf(guestUser)}</strong>,</p><p>${
-              cancelledBy === "host" ? "The host cancelled" : "You cancelled"
-            } your booking at <strong>${title}</strong> on ${when}.</p><p>${refundLine}</p>`
-          ),
-        }).catch((err) => console.error("Cancellation email (guest) failed:", err.message));
+        const email = await renderEmail("cancellation_guest", {
+          firstName: nameOf(guestUser),
+          whoCancelled: cancelledBy === "host" ? "The host cancelled" : "You cancelled",
+          spaceName: title,
+          date: when,
+          refundLine,
+        });
+        sendEmail({ to: guestUser.email, ...email }).catch((err) => console.error("Cancellation email (guest) failed:", err.message));
       }
       if (hostUser?.email) {
-        sendEmail({
-          to: hostUser.email,
-          subject: "A booking has been cancelled",
-          html: shell(
-            "Booking cancelled",
-            `<p>Hi <strong>${nameOf(hostUser)}</strong>,</p><p>${
-              cancelledBy === "host" ? "You cancelled" : "The guest cancelled"
-            } the booking at <strong>${title}</strong> on ${when}. The dates are available again.</p>`
-          ),
-        }).catch((err) => console.error("Cancellation email (host) failed:", err.message));
+        const email = await renderEmail("cancellation_host", {
+          firstName: nameOf(hostUser),
+          whoCancelled: cancelledBy === "host" ? "You cancelled" : "The guest cancelled",
+          spaceName: title,
+          date: when,
+        });
+        sendEmail({ to: hostUser.email, ...email }).catch((err) => console.error("Cancellation email (host) failed:", err.message));
       }
     })().catch((err) => console.error("Cancellation emails failed:", err.message));
 

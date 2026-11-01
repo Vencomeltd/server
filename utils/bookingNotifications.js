@@ -7,6 +7,50 @@
 const createNotification = require("./notify");
 const sendEmail = require("./sendEmail");
 const sendSMS = require("./sendSMS");
+const { PAYMENTS_CONFIG } = require("../config/payments");
+const { resolveDayHours } = require("./pricing");
+const { renderEmail, blocks } = require("./emailTemplates");
+
+// The space's opening hours for each booked day (UK dates), as table rows.
+// More than two weeks of days is shown as the weekly pattern instead.
+const UK = { timeZone: "Europe/London" };
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+function hoursOn(date, availability) {
+  const openDays = (availability?.openDays || []).map((d) => String(d).toLowerCase());
+  if (openDays.length && !openDays.includes(WEEKDAYS[date.getUTCDay()].toLowerCase())) return "Closed";
+  const window = resolveDayHours(date, availability);
+  if (window === null) return "Open 24 hours";
+  return window.openTime && window.closeTime ? `${window.openTime}–${window.closeTime}` : "See listing";
+}
+function openingHoursRows(bookings, availability) {
+  if (!availability) return "";
+  const ukDate = (d) => new Date(d).toLocaleDateString("en-CA", UK);
+  const days = new Map();
+  for (const booking of bookings) {
+    const last = ukDate(new Date(new Date(booking.checkOut).getTime() - 1));
+    for (let day = ukDate(booking.checkIn); day <= last && days.size <= 14; ) {
+      days.set(day, new Date(`${day}T12:00:00Z`));
+      day = new Date(new Date(`${day}T12:00:00Z`).getTime() + 86400000).toISOString().slice(0, 10);
+    }
+  }
+  const row = (label, value) => `
+                  <tr>
+                    <td style="padding: 6px 0; color: #666;">${label}</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">${value}</td>
+                  </tr>`;
+  if (days.size > 14) {
+    const week = [1, 2, 3, 4, 5, 6, 0].map((n) => new Date(Date.UTC(2026, 0, 4 + n, 12)));
+    return row("Opening hours", "") + week.map((d) => row(WEEKDAYS[d.getUTCDay()], hoursOn(d, availability))).join("");
+  }
+  return (
+    row("Opening hours", "") +
+    [...days.values()]
+      .map((d) => row(d.toLocaleDateString("en-GB", { ...UK, weekday: "short", day: "numeric", month: "short" }).replace(",", ""), hoursOn(d, availability)))
+      .join("")
+  );
+}
+const detailsTable = (rowsHtml) =>
+  `<div style="background-color: #f5f7ff; padding: 20px; margin: 25px 0; border-radius: 8px;"><table width="100%" cellpadding="0" cellspacing="0" style="font-size: 14px;">${rowsHtml}</table></div>`;
 
 // "Wed 4 Nov 2026, 10:00–13:00" for a same-day booking, otherwise
 // "Wed 4 Nov 2026 – Thu 5 Nov 2026". UK time.
@@ -26,6 +70,13 @@ const seriesTotal = (bookings) => Math.round(bookings.reduce((sum, b) => sum + (
 function dateRows(bookings) {
   const cell = 'style="padding: 6px 0; text-align: right; font-weight: 600;"';
   const label = 'style="padding: 6px 0; color: #666;"';
+  if (bookings[0].lease?.months) {
+    return `
+                  <tr>
+                    <td ${label}>Lease</td>
+                    <td ${cell}>${bookings[0].lease.months} months, ${bookings[0].checkIn.toLocaleDateString("en-GB")} – ${bookings[bookings.length - 1].checkOut.toLocaleDateString("en-GB")}</td>
+                  </tr>`;
+  }
   if (bookings.length === 1) {
     const [booking] = bookings;
     return `
@@ -45,11 +96,42 @@ function dateRows(bookings) {
                   </tr>`;
 }
 
+// Core / utilities / VAT rows (summed over a series), only when the booking
+// has utilities or VAT -- otherwise its total is all core.
+function breakdownRows(bookings) {
+  const parts = bookings.map((b) => b.pricingBreakdown).filter((bd) => bd?.totalPence);
+  const sum = (field) => parts.reduce((acc, bd) => acc + (bd[field] || 0), 0);
+  if (!parts.length || (!sum("utilitiesPence") && !sum("vatPence"))) return "";
+  const money = (pence) => `£${(pence / 100).toFixed(2)}`;
+  const row = (label, pence) => `
+                  <tr>
+                    <td style="padding: 6px 0; color: #666;">${label}</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">${money(pence)}</td>
+                  </tr>`;
+  return [
+    row("Core price", sum("corePence")),
+    sum("utilitiesPence") ? row("Utilities", sum("utilitiesPence")) : "",
+    sum("vatPence") ? row(`VAT at ${parts[0].vatRatePct}%`, sum("vatPence")) : "",
+  ].join("");
+}
+
+// A lease's later months, charged one by one before each starts.
+function leaseRows(bookings) {
+  if (!bookings[0].lease?.months || bookings.length < 2) return "";
+  return `
+                  <tr>
+                    <td style="padding: 6px 0; color: #666;">Each later month</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${bookings[1].totalPrice}, charged ${PAYMENTS_CONFIG.leaseChargeLeadDays} days before the month starts</td>
+                  </tr>`;
+}
+
 // `series` (Recurring / Multiple Dates) sends one set of notifications listing
-// every date with the series total, instead of one set per date.
+// every date with the series total, instead of one set per date. A lease
+// (also a series) only pays its first month now.
 async function sendBookingCreatedNotifications(booking, property, guestUser, hostUser, io, series) {
   const dates = series?.length > 1 ? series : [booking];
-  const totalPrice = seriesTotal(dates);
+  const charged = booking.lease?.months ? dates.slice(0, 1) : dates;
+  const totalPrice = seriesTotal(charged);
   const guestDisplayName = guestUser?.displayName || guestUser?.firstName || "A guest";
   const hostDisplayName = hostUser?.displayName || hostUser?.firstName || "there";
 
@@ -64,7 +146,22 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
     });
   }
 
-  if (guestUser?.email) {
+  if (guestUser?.email && booking.status === "confirmed") {
+    const address = property.location?.address ? [property.location.address, property.location.city, property.location.country].filter(Boolean).join(", ") : "";
+    await sendEmail({
+      to: guestUser.email,
+      ...(await renderEmail("booking_confirmation", {
+        firstName: guestDisplayName,
+        spaceName: property.title || "your space",
+        details: detailsTable(`
+                  <tr><td style="padding: 6px 0; color: #666;">Property</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">${property.title || "—"}</td></tr>
+                  ${address ? `<tr><td style="padding: 6px 0; color: #666;">Full Address</td><td style="padding: 6px 0; text-align: right; font-weight: 600; color: #305CDE;">${address}</td></tr>` : ""}${dateRows(dates)}${openingHoursRows(dates, property.availability)}${breakdownRows(charged)}${leaseRows(dates)}
+                  <tr><td style="padding: 6px 0; color: #666;">Guests</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">${booking.guests}</td></tr>
+                  <tr><td style="padding: 8px 0; color: #0A1628; font-weight: 700; border-top: 1px solid #E5E7EB;">Total Paid</td><td style="padding: 8px 0; text-align: right; font-weight: 700; border-top: 1px solid #E5E7EB;">£${(totalPrice + (booking.deposit?.amount || 0)).toFixed(2)}</td></tr>`),
+        button: blocks.button("https://www.vencome.com/customer/bookings", "View My Booking"),
+      })),
+    });
+  } else if (guestUser?.email) {
     await sendEmail({
       to: guestUser.email,
       subject: booking.status === "confirmed" ? "Your booking is confirmed 🎉" : "Your booking request has been received",
@@ -98,7 +195,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                     <td style="padding: 6px 0; color: #666;">Full Address</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600; color: #305CDE;">${[property.location.address, property.location.city, property.location.country].filter(Boolean).join(", ")}</td>
                   </tr>
-                  ` : ''}${dateRows(dates)}
+                  ` : ''}${dateRows(dates)}${breakdownRows(charged)}${leaseRows(dates)}
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Guests</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">${booking.guests}</td>
@@ -161,7 +258,27 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
     });
   }
 
-  if (hostUser?.email) {
+  if (hostUser?.email && booking.status === "pending") {
+    await sendEmail({
+      to: hostUser.email,
+      ...(await renderEmail("booking_request", {
+        firstName: hostDisplayName,
+        guestName: guestDisplayName,
+        spaceName: property.title,
+        details: detailsTable(`
+                  <tr><td style="padding: 6px 0; color: #666;">Property</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">${property.title}</td></tr>
+                  <tr><td style="padding: 6px 0; color: #666;">Guest</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">${guestDisplayName}</td></tr>${dateRows(dates)}${breakdownRows(charged)}${leaseRows(dates)}
+                  <tr><td style="padding: 6px 0; color: #666;">Total</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">£${totalPrice}</td></tr>`),
+        actionButtons: booking.hostActionToken
+          ? `<div style="text-align: center; margin: 24px 0;">
+                <a href="https://vencome-server.onrender.com/api/bookings/${booking._id}/quick-action?token=${booking.hostActionToken}&action=confirmed" style="background: #16A34A; color: #fff; padding: 14px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; margin-right: 10px; display: inline-block;">Approve</a>
+                <a href="https://vencome-server.onrender.com/api/bookings/${booking._id}/quick-action?token=${booking.hostActionToken}&action=declined" style="background: #fff; color: #DC2626; padding: 14px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; border: 1.5px solid #DC2626; display: inline-block;">Decline</a>
+              </div>
+              <p style="text-align: center; margin: 0 0 8px;"><a href="https://www.vencome.com/dashboard/bookings" style="color: #305CDE; font-size: 13px; text-decoration: none; font-weight: 600;">Or review full details on your dashboard</a></p>`
+          : blocks.button("https://www.vencome.com/dashboard/bookings", "Review the request"),
+      })),
+    });
+  } else if (hostUser?.email) {
     await sendEmail({
       to: hostUser.email,
       subject: `New booking request for ${property.title}`,
@@ -191,7 +308,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Guest</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">${guestDisplayName}</td>
-                  </tr>${dateRows(dates)}
+                  </tr>${dateRows(dates)}${breakdownRows(charged)}${leaseRows(dates)}
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Total</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${totalPrice}</td>
@@ -268,6 +385,7 @@ async function sendSeriesDecisionEmail(series, property, guestUser, status) {
         <table style="width:100%;border-collapse:collapse;margin:20px 0;background:#F8F6F0;border-radius:8px;padding:16px;">
           ${confirmed && address ? `<tr><td style="padding:8px 0;color:#666;">Full Address</td><td style="padding:8px 0;text-align:right;font-weight:700;color:#305CDE;">${address}</td></tr>` : ""}
           <tr><td style="padding:8px 0;color:#666;" valign="top">Dates (${series.length})</td><td style="padding:8px 0;text-align:right;font-weight:700;">${series.map(bookingDateLabel).join("<br>")}</td></tr>
+          ${confirmed ? openingHoursRows(series, property?.availability) : ""}
           <tr><td style="padding:8px 0;color:#666;">${confirmed ? "Total Paid" : "Total"}</td><td style="padding:8px 0;text-align:right;font-weight:700;">£${seriesTotal(series).toFixed(2)}</td></tr>
         </table>
         <p>${
@@ -282,4 +400,4 @@ async function sendSeriesDecisionEmail(series, property, guestUser, status) {
   });
 }
 
-module.exports = { sendBookingCreatedNotifications, sendSeriesDecisionEmail, bookingDateLabel };
+module.exports = { sendBookingCreatedNotifications, sendSeriesDecisionEmail, bookingDateLabel, breakdownRows, openingHoursRows };

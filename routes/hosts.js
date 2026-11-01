@@ -91,7 +91,7 @@ router.get("/:hostId", async (req, res) => {
     // ObjectId (older/shared links) -- same dual-lookup Property.slug uses.
     const isObjectId = /^[0-9a-fA-F]{24}$/.test(hostId);
     const selectFields =
-      "firstName lastName displayName profileImage bio createdAt businessVerified slug";
+      "firstName lastName displayName profileImage bio createdAt businessVerified slug businessVerification.companyName accountFlag";
     const host = isObjectId
       ? await User.findById(hostId).select(selectFields)
       : await User.findOne({ slug: hostId }).select(selectFields);

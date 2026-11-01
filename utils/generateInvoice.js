@@ -100,20 +100,25 @@ async function generateInvoicePDF(booking, property, guest, host) {
 
     // Totals
     y += 20;
-    const commissionRate = booking.platformFee && booking.totalPrice
-      ? Math.round((booking.platformFee / booking.totalPrice) * 100)
-      : 10;
+    // The customer's breakdown (utils/vatPricing.js): core, utilities, VAT.
+    // VenCome's commission is the host's cost, so it isn't shown here.
+    // Bookings made before VAT pricing have no breakdown -- all core.
+    const bd = booking.pricingBreakdown;
+    const money = (pence) => `£${(pence / 100).toFixed(2)}`;
+    const rows = bd?.totalPence
+      ? [
+          ["Core price", money(bd.corePence)],
+          ...(bd.utilitiesPence ? [["Utilities", money(bd.utilitiesPence)]] : []),
+          ...(bd.vatPence ? [[`VAT at ${bd.vatRatePct}%`, money(bd.vatPence)]] : []),
+        ]
+      : [["Subtotal", `£${booking.totalPrice.toLocaleString()}`]];
+    for (const [label, amount] of rows) {
+      doc.fontSize(10).fillColor(GREY).font("Helvetica")
+        .text(label, doc.page.width - 230, y)
+        .text(amount, doc.page.width - 120, y, { width: 70, align: "right" });
+      y += 20;
+    }
 
-    doc.fontSize(10).fillColor(GREY).font("Helvetica")
-      .text("Subtotal", doc.page.width - 230, y)
-      .text(`£${booking.totalPrice.toLocaleString()}`, doc.page.width - 120, y, { width: 70, align: "right" });
-
-    y += 20;
-    doc.fontSize(10).fillColor(GREY).font("Helvetica")
-      .text(`Platform fee (${commissionRate}%)`, doc.page.width - 230, y)
-      .text(`—`, doc.page.width - 120, y, { width: 70, align: "right" });
-
-    y += 20;
     doc.rect(doc.page.width - 230, y, 180, 1).fill("#E5E7EB");
 
     y += 12;

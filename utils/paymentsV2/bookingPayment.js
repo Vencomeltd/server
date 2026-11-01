@@ -126,7 +126,10 @@ async function onBookingPaid(pi, io, { series = false } = {}) {
   p.hostAmountPence = p.hostAmountPence ?? amounts.hostAmountPence;
   if (!p.status || p.status === "pending") p.status = "paid";
 
-  const releaseDate = new Date(new Date(booking.checkOut).getTime() + PAYMENTS_CONFIG.escrowReleaseHours * HOUR_MS);
+  // A lease month is rent paid in advance: the host is paid once the month
+  // has started, not after it ends.
+  const payoutFrom = booking.lease?.months ? booking.checkIn : booking.checkOut;
+  const releaseDate = new Date(new Date(payoutFrom).getTime() + PAYMENTS_CONFIG.escrowReleaseHours * HOUR_MS);
   if (!booking.isPaid) {
     booking.isPaid = true;
     booking.escrowReleaseDate = releaseDate;
@@ -210,6 +213,63 @@ async function onSeriesPayment(pi, io, kind) {
   const [guest, host] = await Promise.all([User.findById(series[0].guest), User.findById(series[0].property.host)]);
   await sendBookingCreatedNotifications(series[0], series[0].property, guest, host, io, series);
   io?.to(`user_${series[0].guest}`).emit("paymentSuccess", { bookingId: series[0]._id.toString(), groupId });
+}
+
+// A lease's first month was paid (Instant Book) or authorised (Request to
+// Book). Only that month is charged; the card it was paid with is saved for
+// the rest, and from now on every month of the lease holds its dates.
+async function onLeasePayment(pi, io, kind) {
+  const { groupId } = pi.metadata;
+  const bookings = await loadSeries(groupId);
+  if (!bookings.length) return;
+  const [first] = bookings;
+
+  const firstPayment = !first.isPaid && !first.paymentAuthorizedAt;
+  if (firstPayment) {
+    for (const booking of bookings) {
+      if (!(await ensureBookingStillHeld(booking))) {
+        await cancelUnpaidBookings({ groupId });
+        return releaseLostBookingPayment(first, pi.id);
+      }
+    }
+  }
+
+  const apply = kind === "paid" ? onBookingPaid : onBookingAuthorized;
+  await apply({ ...pi, metadata: { ...pi.metadata, bookingId: first._id.toString() } }, io, { series: true });
+  if (kind === "paid") await Booking.updateOne({ _id: first._id }, { $set: { "lease.chargeStatus": "paid" } });
+  if (!firstPayment) return; // host approval: applyDecision already emailed the guest
+
+  await Booking.updateMany(
+    { groupId },
+    {
+      $set: {
+        "lease.securedAt": new Date(),
+        "lease.customerId": typeof pi.customer === "string" ? pi.customer : pi.customer?.id,
+        "lease.paymentMethodId": typeof pi.payment_method === "string" ? pi.payment_method : pi.payment_method?.id,
+      },
+    }
+  );
+  const series = await loadSeries(groupId);
+  const [guest, host] = await Promise.all([User.findById(first.guest), User.findById(first.property.host)]);
+  await sendBookingCreatedNotifications(series[0], series[0].property, guest, host, io, series);
+  io?.to(`user_${first.guest}`).emit("paymentSuccess", { bookingId: first._id.toString(), groupId });
+}
+
+// A later lease month was charged (utils/paymentsV2/lease.js, then again by
+// the webhook -- safe to run twice).
+async function markLeaseMonthPaid(pi) {
+  const booking = await loadBooking(pi.metadata.bookingId);
+  if (!booking || booking.isPaid) return;
+  await onBookingPaid(pi, null, { series: true });
+  await Booking.updateOne({ _id: booking._id }, { $set: { "lease.chargeStatus": "paid" }, $unset: { "lease.nextRetryAt": "" } });
+  const guest = await User.findById(booking.guest).select("email firstName displayName");
+  if (guest?.email) {
+    sendEmail({
+      to: guest.email,
+      subject: `Lease payment received — month ${booking.lease.index} of ${booking.lease.months}`,
+      html: `<p>Hi ${guest.displayName || guest.firstName || "there"}, we've taken <strong>£${booking.totalPrice}</strong> for month ${booking.lease.index} of your lease at <strong>${booking.property.title}</strong> (from ${new Date(booking.checkIn).toLocaleDateString("en-GB")}). View your lease from your VenCome dashboard.</p>`,
+    }).catch((err) => console.error("[Payments v2] Lease receipt email failed:", err.message));
+  }
 }
 
 const loadSeries = (groupId) =>
@@ -303,6 +363,17 @@ async function handleEvent(event, io) {
     case "payment_intent.amount_capturable_updated:booking_group":
       await onSeriesPayment(obj, io, "authorized");
       return true;
+    case "payment_intent.succeeded:lease":
+      await onLeasePayment(obj, io, "paid");
+      return true;
+    case "payment_intent.amount_capturable_updated:lease":
+      await onLeasePayment(obj, io, "authorized");
+      return true;
+    case "payment_intent.succeeded:lease_month":
+      await markLeaseMonthPaid(obj);
+      return true;
+    case "payment_intent.payment_failed:lease":
+    case "payment_intent.payment_failed:lease_month":
     case "payment_intent.payment_failed:booking_group":
     case "payment_intent.payment_failed:booking":
       console.warn(`[Payments v2] Booking payment failed for ${obj.metadata.bookingId}:`, obj.last_payment_error?.message);
@@ -312,4 +383,4 @@ async function handleEvent(event, io) {
   }
 }
 
-module.exports = { handleEvent, onBookingPaid, onBookingAuthorized, scheduleDepositAfterPayment };
+module.exports = { handleEvent, onBookingPaid, onBookingAuthorized, scheduleDepositAfterPayment, markLeaseMonthPaid };
