@@ -369,6 +369,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/verification", verificationRoutes);
 app.use("/api/drafts", draftRoutes);
 app.use("/api/admin/claims", require("./routes/adminClaims"));
+app.use("/api/admin/leases", require("./routes/adminLeases"));
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/calendar", require("./routes/calendarSync"));
 app.use("/api/host-calendar", require("./routes/hostCalendar"));

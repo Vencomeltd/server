@@ -16,6 +16,11 @@ const PAYMENTS_CONFIG = Object.freeze({
   captureSafetyMarginHours: 6, // act before capture_before minus this margin
   escrowReleaseHours: 48, // hours after checkout before the host payout
   schedulerIntervalMinutes: 5,
+  // Leases (monthly instalments, utils/paymentsV2/lease.js).
+  leaseChargeLeadDays: 3, // each month is charged this many days before it starts
+  leaseRetryDays: 3, // a failed month is retried daily this many times, then host + admin decide
+  leaseMaxMonths: 36,
+  leaseLowCommissionMonths: 12, // a monthly booking or lease this long pays the annual rate
   // Cancellation refund tiers, checked top to bottom against hours until
   // check-in. `exclusive` means strictly more than minHours.
   cancellationTiers: Object.freeze([

@@ -5,6 +5,7 @@ const sendEmail = require("../sendEmail");
 const sendSMS = require("../sendSMS");
 const User = require("../../models/User");
 const Property = require("../../models/Property");
+const { PAYMENTS_CONFIG } = require("../../config/payments");
 
 const clientUrl = () => process.env.CLIENT_URL || "https://www.vencome.com";
 const bookingLink = (booking) => `${clientUrl()}/bookings/${booking._id}`;
@@ -200,7 +201,52 @@ const payoutSent = safely(async (booking, amountPence) => {
   );
 });
 
+// A lease month's charge was declined: the guest updates their card from the
+// booking page; it's retried daily meanwhile (utils/paymentsV2/lease.js).
+const leasePaymentFailed = safely(async (booking) => {
+  const { guest, title } = await loadParties(booking);
+  const link = bookingLink(booking);
+  await email(
+    guest?.email,
+    "Action needed: your lease payment didn't go through",
+    wrap(
+      "Please update your card",
+      `<p>Hi <strong>${nameOf(guest)}</strong>,</p>
+       <p>We couldn't take <strong>£${booking.totalPrice}</strong> for month ${booking.lease.index} of your lease at <strong>${title}</strong>. We'll try again each day for the next ${PAYMENTS_CONFIG.leaseRetryDays} days -- or add a new card now and we'll charge it straight away.</p>
+       ${button(link, "Update card")}`
+    )
+  );
+  await sms(guest, `VenCome: your lease payment of £${booking.totalPrice} for ${title} didn't go through. Please update your card: ${link}`);
+});
+
+// Still unpaid after the retries: the host and VenCome decide (continue
+// trying, or end the lease -- admin dashboard, Leases).
+const leasePaymentNeedsDecision = safely(async (booking) => {
+  const { guest, host, title } = await loadParties(booking);
+  const when = new Date(booking.checkIn).toLocaleDateString("en-GB");
+  await email(
+    host?.email,
+    "A lease payment is overdue",
+    wrap(
+      "Lease payment overdue",
+      `<p>Hi <strong>${nameOf(host)}</strong>,</p>
+       <p>The guest's payment for month ${booking.lease.index} of their lease at <strong>${title}</strong> (from ${when}) still hasn't gone through after ${PAYMENTS_CONFIG.leaseRetryDays} retries. VenCome will contact you to agree whether to keep trying or end the lease.</p>`
+    )
+  );
+  await email(
+    process.env.ADMIN_EMAIL,
+    `Lease payment overdue: ${title}`,
+    wrap(
+      "Decision needed",
+      `<p>Month ${booking.lease.index} of ${booking.lease.months} (booking <strong>${booking._id}</strong>, ${title}, from ${when}) is unpaid after ${PAYMENTS_CONFIG.leaseRetryDays} retries. Last error: ${booking.lease.lastError || "unknown"}.</p>
+       <p>Guest: ${guest?.email || "unknown"}. Retry or end the lease in the admin dashboard under Leases.</p>`
+    )
+  );
+});
+
 module.exports = {
+  leasePaymentFailed,
+  leasePaymentNeedsDecision,
   holdPlaced,
   holdFailed,
   cardFixExpired,

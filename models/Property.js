@@ -104,6 +104,10 @@ const propertySchema = new mongoose.Schema(
       weekly: { type: Number, default: 0 },
       monthly: { type: Number, default: 0 },
       annual: { type: Number, default: 0 },
+      // Office-style lease: the monthly price, but booked for at least this
+      // many months and paid month by month (routes/bookings.js POST /lease).
+      // Unset = no minimum, monthly bookings are paid upfront as before.
+      minimumTermMonths: { type: Number, min: 2, max: 36 },
       vat: {
         hourly: { type: unitTaxSchema, default: undefined },
         daily: { type: unitTaxSchema, default: undefined },

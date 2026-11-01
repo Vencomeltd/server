@@ -46,6 +46,10 @@ module.exports = function setupBookingExpiry() {
 
           booking.status = "declined";
           await booking.save();
+          // A lease's later months have no card authorisation of their own.
+          if (booking.lease?.months) {
+            await Booking.updateMany({ groupId: booking.groupId, status: "pending" }, { $set: { status: "declined" } });
+          }
 
           const guestUser = booking.guest;
           if (guestUser?.email) {

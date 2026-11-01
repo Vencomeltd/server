@@ -23,11 +23,11 @@ function occupyingBookingFilter(now = new Date()) {
     $or: [
       {
         status: "confirmed",
-        $or: [{ instantBook: { $ne: true } }, { isPaid: true }, { createdAt: { $gte: holdCutoff } }],
+        $or: [{ instantBook: { $ne: true } }, { isPaid: true }, { createdAt: { $gte: holdCutoff } }, { "lease.securedAt": { $exists: true } }],
       },
       {
         status: "pending",
-        $or: [{ isPaid: true }, { paymentAuthorizedAt: { $exists: true } }, { createdAt: { $gte: holdCutoff } }],
+        $or: [{ isPaid: true }, { paymentAuthorizedAt: { $exists: true } }, { createdAt: { $gte: holdCutoff } }, { "lease.securedAt": { $exists: true } }],
       },
     ],
   };
@@ -38,12 +38,14 @@ function holdExpired(booking, now = new Date()) {
   const unpaid =
     (booking.status === "pending" && !booking.isPaid && !booking.paymentAuthorizedAt) ||
     (booking.status === "confirmed" && booking.instantBook && !booking.isPaid);
-  return Boolean(unpaid) && new Date(booking.createdAt).getTime() < now.getTime() - HOLD_MINUTES * 60 * 1000;
+  return Boolean(unpaid) && !booking.lease?.securedAt && new Date(booking.createdAt).getTime() < now.getTime() - HOLD_MINUTES * 60 * 1000;
 }
 
-// Mongo filter for unpaid bookings (either kind), for cleanup queries.
+// Mongo filter for unpaid bookings (either kind), for cleanup queries. A
+// lease's later months are unpaid until their month comes, but are held.
 const UNPAID_BOOKING_FILTER = {
   isPaid: { $ne: true },
+  "lease.securedAt": { $exists: false },
   $or: [{ status: "pending", paymentAuthorizedAt: { $exists: false } }, { status: "confirmed", instantBook: true }],
 };
 

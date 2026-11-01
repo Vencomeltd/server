@@ -15,6 +15,7 @@ const { cancelFromHostDecision } = require("../utils/paymentsV2/cancel");
 const notify = require("../utils/paymentsV2/notify");
 const { ensureBookingStillHeld, cancelUnpaidBookings } = require("../utils/bookingHold");
 const { bookingDateLabel } = require("../utils/bookingNotifications");
+const { useNewLeaseCard } = require("../utils/paymentsV2/lease");
 
 const router = express.Router();
 
@@ -163,12 +164,21 @@ router.post(
       }
 
       const perBooking = bookings.map((booking) => computeBookingAmounts(booking));
-      const amountPence = perBooking.reduce((sum, a) => sum + a.amountPence, 0);
+      // A lease pays only its first month now (its card is saved for the
+      // rest -- utils/paymentsV2/lease.js); any other series pays every date.
+      const lease = bookings[0].lease?.months ? bookings[0].lease : null;
+      const charged = lease ? perBooking.slice(0, 1) : perBooking;
+      const amountPence = charged.reduce((sum, a) => sum + a.amountPence, 0);
       if (amountPence < 30) return res.status(400).json({ error: "This booking total is below the minimum card payment." });
 
       const [first] = bookings;
       const policy = first.property?.depositPolicy;
       const plan = planSeriesDeposit(policy);
+      const leaseSummary = lease && {
+        months: lease.months,
+        minimumMonths: lease.minimumMonths,
+        chargeLeadDays: PAYMENTS_CONFIG.leaseChargeLeadDays,
+      };
       const depositSummary = {
         mode: plan.mode,
         amountPence: plan.mode === "none" ? 0 : policy.amountPence,
@@ -188,14 +198,15 @@ router.post(
       if (existingId) {
         const existing = await stripe.paymentIntents.retrieve(existingId);
         if (["requires_payment_method", "requires_confirmation", "requires_action"].includes(existing.status)) {
-          return res.json({ enabled: true, clientSecret: existing.client_secret, amountPence: existing.amount, deposit: depositSummary, bookings: summary });
+          return res.json({ enabled: true, clientSecret: existing.client_secret, amountPence: existing.amount, deposit: depositSummary, bookings: summary, lease: leaseSummary });
         }
         return res.status(400).json({ error: "This series already has a payment in progress." });
       }
 
       const guest = await User.findById(req.user.id);
       const customerId = await getOrCreateCustomer(guest);
-      const saveCard = Boolean(policy && policy.mode !== "none" && policy.amountPence > 0);
+      // A lease's later months are charged to this card, so it's always saved.
+      const saveCard = Boolean(lease) || Boolean(policy && policy.mode !== "none" && policy.amountPence > 0);
 
       const pi = await stripe.paymentIntents.create(
         {
@@ -204,10 +215,12 @@ router.post(
           customer: customerId,
           capture_method: first.status === "pending" ? "manual" : "automatic",
           ...(saveCard && { setup_future_usage: "off_session" }),
-          transfer_group: `series_${groupId}`,
-          description: `Series ${groupId} — ${first.property?.title || "VenCome space"} (${bookings.length} dates)`,
+          transfer_group: lease ? `booking_${first._id}` : `series_${groupId}`,
+          description: lease
+            ? `Lease ${groupId} — ${first.property?.title || "VenCome space"} (month 1 of ${lease.months})`
+            : `Series ${groupId} — ${first.property?.title || "VenCome space"} (${bookings.length} dates)`,
           // bookingId is the first date; the webhook applies it to the whole series.
-          metadata: { bookingId: first._id.toString(), groupId, type: "booking_group" },
+          metadata: { bookingId: first._id.toString(), groupId, type: lease ? "lease" : "booking_group" },
           ...(saveCard
             ? { payment_method_types: ["card"] }
             : { automatic_payment_methods: { enabled: true, allow_redirects: "never" } }),
@@ -216,7 +229,7 @@ router.post(
       );
 
       await Promise.all(
-        bookings.map((booking, i) => {
+        bookings.slice(0, charged.length).map((booking, i) => {
           const amounts = perBooking[i];
           booking.paymentIntentId = pi.id;
           booking.payment.paymentIntentId = pi.id;
@@ -230,7 +243,7 @@ router.post(
         })
       );
 
-      res.json({ enabled: true, clientSecret: pi.client_secret, amountPence, deposit: depositSummary, bookings: summary });
+      res.json({ enabled: true, clientSecret: pi.client_secret, amountPence, deposit: depositSummary, bookings: summary, lease: leaseSummary });
     } catch (err) {
       console.error("Create series payment intent error:", err);
       res.status(500).json({ error: "Could not start payment" });
@@ -313,6 +326,54 @@ router.post(
       res.json({ deposit: publicDeposit(booking.depositHold) });
     } catch (err) {
       console.error("Update deposit card error:", err);
+      res.status(500).json({ error: "Could not update your card" });
+    }
+  }
+);
+
+// ── Lease: the guest replaces the card their monthly payments use ──────────
+// Same two steps as the deposit card above: no body -> a SetupIntent; then
+// { setupIntentId } -> every unpaid month uses the new card, and a month that
+// failed is charged again now.
+router.post(
+  "/lease/:groupId/update-card",
+  auth,
+  blockDuringImpersonation,
+  [param("groupId").isUUID().withMessage("Invalid lease id"), body("setupIntentId").optional().isString().trim().notEmpty()],
+  validate,
+  async (req, res) => {
+    if (!isPaymentsV2Enabled()) return res.status(404).json({ error: "Not available" });
+    const { groupId } = req.params;
+
+    try {
+      const first = await Booking.findOne({ groupId, guest: req.user.id, "lease.securedAt": { $exists: true } });
+      if (!first) return res.status(404).json({ error: "Lease not found" });
+
+      const guest = await User.findById(req.user.id);
+      const customerId = await getOrCreateCustomer(guest);
+      if (customerId !== first.lease.customerId) {
+        return res.status(400).json({ error: "Please contact VenCome to change the card on this lease." });
+      }
+
+      if (!req.body.setupIntentId) {
+        const si = await stripe.setupIntents.create({
+          customer: customerId,
+          usage: "off_session",
+          payment_method_types: ["card"],
+          metadata: { groupId, type: "lease_card_update" },
+        });
+        return res.json({ clientSecret: si.client_secret });
+      }
+
+      const si = await stripe.setupIntents.retrieve(req.body.setupIntentId);
+      if (si.metadata?.groupId !== groupId || si.customer !== customerId || si.status !== "succeeded") {
+        return res.status(400).json({ error: "That card could not be verified. Please try again." });
+      }
+      const results = await useNewLeaseCard(groupId, si.payment_method);
+      const failed = results.find((r) => !r.paid);
+      res.json({ updated: true, charged: results.filter((r) => r.paid).length, error: failed ? "The new card was saved, but the overdue payment was declined." : undefined });
+    } catch (err) {
+      console.error("Update lease card error:", err);
       res.status(500).json({ error: "Could not update your card" });
     }
   }

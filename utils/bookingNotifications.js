@@ -7,6 +7,7 @@
 const createNotification = require("./notify");
 const sendEmail = require("./sendEmail");
 const sendSMS = require("./sendSMS");
+const { PAYMENTS_CONFIG } = require("../config/payments");
 
 // "Wed 4 Nov 2026, 10:00–13:00" for a same-day booking, otherwise
 // "Wed 4 Nov 2026 – Thu 5 Nov 2026". UK time.
@@ -26,6 +27,13 @@ const seriesTotal = (bookings) => Math.round(bookings.reduce((sum, b) => sum + (
 function dateRows(bookings) {
   const cell = 'style="padding: 6px 0; text-align: right; font-weight: 600;"';
   const label = 'style="padding: 6px 0; color: #666;"';
+  if (bookings[0].lease?.months) {
+    return `
+                  <tr>
+                    <td ${label}>Lease</td>
+                    <td ${cell}>${bookings[0].lease.months} months, ${bookings[0].checkIn.toLocaleDateString("en-GB")} – ${bookings[bookings.length - 1].checkOut.toLocaleDateString("en-GB")}</td>
+                  </tr>`;
+  }
   if (bookings.length === 1) {
     const [booking] = bookings;
     return `
@@ -64,11 +72,23 @@ function breakdownRows(bookings) {
   ].join("");
 }
 
+// A lease's later months, charged one by one before each starts.
+function leaseRows(bookings) {
+  if (!bookings[0].lease?.months || bookings.length < 2) return "";
+  return `
+                  <tr>
+                    <td style="padding: 6px 0; color: #666;">Each later month</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${bookings[1].totalPrice}, charged ${PAYMENTS_CONFIG.leaseChargeLeadDays} days before the month starts</td>
+                  </tr>`;
+}
+
 // `series` (Recurring / Multiple Dates) sends one set of notifications listing
-// every date with the series total, instead of one set per date.
+// every date with the series total, instead of one set per date. A lease
+// (also a series) only pays its first month now.
 async function sendBookingCreatedNotifications(booking, property, guestUser, hostUser, io, series) {
   const dates = series?.length > 1 ? series : [booking];
-  const totalPrice = seriesTotal(dates);
+  const charged = booking.lease?.months ? dates.slice(0, 1) : dates;
+  const totalPrice = seriesTotal(charged);
   const guestDisplayName = guestUser?.displayName || guestUser?.firstName || "A guest";
   const hostDisplayName = hostUser?.displayName || hostUser?.firstName || "there";
 
@@ -117,7 +137,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                     <td style="padding: 6px 0; color: #666;">Full Address</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600; color: #305CDE;">${[property.location.address, property.location.city, property.location.country].filter(Boolean).join(", ")}</td>
                   </tr>
-                  ` : ''}${dateRows(dates)}${breakdownRows(dates)}
+                  ` : ''}${dateRows(dates)}${breakdownRows(charged)}${leaseRows(dates)}
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Guests</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">${booking.guests}</td>
@@ -210,7 +230,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Guest</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">${guestDisplayName}</td>
-                  </tr>${dateRows(dates)}${breakdownRows(dates)}
+                  </tr>${dateRows(dates)}${breakdownRows(charged)}${leaseRows(dates)}
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Total</td>
                     <td style="padding: 6px 0; text-align: right; font-weight: 600;">£${totalPrice}</td>
