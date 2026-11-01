@@ -33,7 +33,7 @@ router.get("/conversations", auth, async (req, res) => {
       $or: [{ guest: userId }, { host: userId }],
     })
       .populate("guest", "displayName profileImage") // only select what you need
-      .populate("host", "displayName profileImage")
+      .populate("host", "displayName profileImage businessVerification.companyName accountFlag")
       .sort({ updatedAt: -1 }) // latest updated first
       .lean(); // return plain JS objects
 
@@ -64,7 +64,7 @@ router.get("/:conversationId", auth, async (req, res) => {
     // Fetch the conversation with guest and host details
     const conversation = await Conversation.findById(req.params.conversationId)
       .populate("guest", "displayName profileImage")
-      .populate("host", "displayName profileImage")
+      .populate("host", "displayName profileImage businessVerification.companyName accountFlag")
       .lean();
 
     if (!conversation) {

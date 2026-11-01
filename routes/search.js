@@ -60,7 +60,7 @@ router.get("/", async (req, res) => {
     const [properties, total] = await Promise.all([
       Property.find(filter)
         .populate("category", "name icon")
-        .populate("host", "firstName lastName profileImage isVerified")
+        .populate("host", "firstName lastName profileImage isVerified businessVerification.companyName accountFlag")
         .sort(sort)
         .skip(skip)
         .limit(limitNum)
@@ -94,7 +94,7 @@ router.get("/nearby", async (req, res) => {
       "coordinates.longitude": { $gte: Number(lng) - radiusDeg, $lte: Number(lng) + radiusDeg },
     })
       .populate("category", "name icon")
-      .populate("host", "firstName lastName profileImage")
+      .populate("host", "firstName lastName profileImage businessVerification.companyName accountFlag")
       .limit(Math.min(50, parseInt(limit)))
       .select("title coverImage location coordinates pricing rating reviewNumber category host");
 

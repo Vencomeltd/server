@@ -749,7 +749,7 @@ router.get("/", async (req, res) => {
       // 287 KB of them) and list views never show a calendar -- leave it out.
       Property.find(filter)
         .select("-blockedDates")
-        .populate("host", "firstName lastName displayName profileImage")
+        .populate("host", "firstName lastName displayName profileImage businessVerification.companyName accountFlag")
         .populate("category", "name")
         .populate("categories", "name")
         .sort({ order: 1, createdAt: -1 })
@@ -801,7 +801,7 @@ router.get("/near-me", async (req, res) => {
 
     const properties = await Property.find({ isActive: true })
       .select("-blockedDates") // list view, see GET / above
-      .populate("host", "firstName lastName displayName profileImage")
+      .populate("host", "firstName lastName displayName profileImage businessVerification.companyName accountFlag")
       .populate("category", "name")
       .populate("categories", "name")
       .limit(100);
@@ -921,7 +921,7 @@ router.get("/by-service-location", async (req, res) => {
       $or: [{ subcategory }, { subcategories: subcategory }],
       isActive: true,
     })
-      .populate("host", "firstName lastName displayName profileImage")
+      .populate("host", "firstName lastName displayName profileImage businessVerification.companyName accountFlag")
       .populate("category", "name slug")
       .select("-__v");
 
@@ -1081,7 +1081,7 @@ router.get("/search", async (req, res) => {
     }
 
     let properties = await Property.find(query)
-      .populate("host", "firstName lastName displayName profileImage")
+      .populate("host", "firstName lastName displayName profileImage businessVerification.companyName accountFlag")
       .populate("category", "name")
       .populate("categories", "name")
       .sort({ createdAt: -1 });
@@ -1302,7 +1302,7 @@ router.get("/:id", async (req, res) => {
       : Property.findOne({ slug: propertyId });
 
     const property = await baseQuery
-      .populate("host", "firstName lastName displayName profileImage slug")
+      .populate("host", "firstName lastName displayName profileImage slug businessVerification.companyName accountFlag")
       .populate("category", "name")
       .populate("categories", "name")
       .populate({
