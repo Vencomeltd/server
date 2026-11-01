@@ -9,6 +9,7 @@
 // line break, **text** is bold. A block variable on its own line is placed
 // as-is (it's HTML built by the code). Every other value is escaped.
 const EmailTemplate = require("../models/EmailTemplate");
+const SiteContent = require("../models/SiteContent");
 
 const TEMPLATES = {
   verification: {
@@ -141,28 +142,36 @@ const blocks = {
       .join("")}</table></div>`,
 };
 
-// Admin overrides, cached briefly so every email isn't a DB read.
-let cache = { at: 0, byKey: {} };
+// Admin overrides, cached briefly so every email isn't a DB read. Also the
+// "Emails footer" block from Site content (routes/siteContent.js).
+let cache = { at: 0, byKey: {}, footer: null };
 async function overrides() {
-  if (Date.now() - cache.at < 60 * 1000) return cache.byKey;
+  if (Date.now() - cache.at < 60 * 1000) return cache;
   try {
-    const saved = await EmailTemplate.find().lean();
-    cache = { at: Date.now(), byKey: Object.fromEntries(saved.map((t) => [t.key, t])) };
+    const [saved, footer] = await Promise.all([EmailTemplate.find().lean(), SiteContent.findOne({ key: "emails.footer" }).lean()]);
+    cache = { at: Date.now(), byKey: Object.fromEntries(saved.map((t) => [t.key, t])), footer: footer?.value || null };
   } catch (err) {
     console.error("[Email templates] Couldn't load overrides, using defaults:", err.message);
   }
-  return cache.byKey;
+  return cache;
 }
 const clearTemplateCache = () => {
-  cache = { at: 0, byKey: {} };
+  cache = { at: 0, byKey: {}, footer: null };
 };
+
+// Site-content markup (**bold**, [text](url)) -> safe HTML for the footer.
+const markupToHtml = (text) =>
+  escapeHtml(text)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^)\s]+)\)/g, '<a href="$2" style="color:#888;">$1</a>')
+    .replace(/\n/g, "<br>");
 
 // { subject, heading, body } for a template: the admin's version if saved,
 // otherwise the default. `draft` (admin preview / test send) wins over both.
 async function resolveTemplate(key, draft) {
   const def = TEMPLATES[key];
   if (!def) throw new Error(`Unknown email template "${key}"`);
-  const saved = draft ? null : (await overrides())[key];
+  const saved = draft ? null : (await overrides()).byKey[key];
   const source = draft || saved || def;
   return {
     subject: source.subject ?? def.subject,
@@ -176,9 +185,10 @@ async function resolveTemplate(key, draft) {
 async function renderEmail(key, vars = {}, { draft, footer } = {}) {
   const def = TEMPLATES[key];
   const t = await resolveTemplate(key, draft);
+  const siteFooter = footer ? null : (await overrides()).footer;
   return {
     subject: fill(t.subject, vars, false),
-    html: frame(fill(t.heading, vars, true), bodyToHtml(t.body, vars, def.blocks), footer),
+    html: frame(fill(t.heading, vars, true), bodyToHtml(t.body, vars, def.blocks), footer || (siteFooter && markupToHtml(siteFooter))),
   };
 }
 

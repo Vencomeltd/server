@@ -7,6 +7,8 @@ const assert = require("node:assert/strict");
 const EmailTemplate = require("../models/EmailTemplate");
 let saved = [];
 EmailTemplate.find = () => ({ lean: async () => saved });
+let siteFooter = null;
+require("../models/SiteContent").findOne = () => ({ lean: async () => siteFooter });
 
 const { renderEmail, clearTemplateCache, blocks } = require("../utils/emailTemplates");
 const { openingHoursRows } = require("../utils/bookingNotifications");
@@ -47,6 +49,14 @@ test("an admin's saved version replaces the default; a draft (preview) beats bot
   const preview = await renderEmail("booking_request", vars, { draft: { subject: "Draft {{guestName}}", heading: "", body: "Draft body" } });
   assert.equal(preview.subject, "Draft Sam");
   assert.doesNotMatch(preview.html, /<h2/);
+});
+
+test("the Site content emails footer replaces the default footer line, with bold and links", async () => {
+  siteFooter = { value: "Questions? [Email us](mailto:support@vencome.com) **today** <b>" };
+  const email = await renderEmail("cancellation_host", { firstName: "Alex" });
+  assert.match(email.html, /Questions\? <a href="mailto:support@vencome.com"[^>]*>Email us<\/a> <strong>today<\/strong> &lt;b&gt;/);
+  assert.doesNotMatch(email.html, /automated message/);
+  siteFooter = null;
 });
 
 test("a custom footer replaces the automated-message line (the reminder's unsubscribe link)", async () => {
