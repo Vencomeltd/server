@@ -1340,13 +1340,13 @@ function getRefundPolicy(policy, checkIn) {
   return { refundPercent, reason };
 }
 
-// A guest can't cancel a confirmed lease month inside its minimum term
+// Neither guest nor host can cancel a confirmed lease month inside its minimum term
 // online -- VenCome ends the lease (routes/adminLeases.js). A lease still
 // awaiting the host, or months past the minimum, cancel as normal.
 const inLeaseMinimumTerm = (booking) =>
   Boolean(booking.lease?.securedAt) && booking.status === "confirmed" && booking.lease.index <= booking.lease.minimumMonths;
 const LEASE_CANCEL_BLOCKED = {
-  error: "This month is inside your lease's minimum term, so it can't be cancelled online. Please contact VenCome and we'll help.",
+  error: "This month is inside the lease's minimum term, so it can't be cancelled online. Please contact VenCome and we'll help.",
   contactSupport: true,
 };
 
@@ -1367,7 +1367,7 @@ router.get("/:id/cancel-preview", auth, async (req, res) => {
     if (["cancelled", "completed"].includes(booking.status)) {
       return res.status(400).json({ error: `Booking is already ${booking.status}` });
     }
-    if (isGuest && inLeaseMinimumTerm(booking)) return res.status(403).json(LEASE_CANCEL_BLOCKED);
+    if (inLeaseMinimumTerm(booking)) return res.status(403).json(LEASE_CANCEL_BLOCKED);
     if (new Date(booking.checkOut) < new Date()) {
       return res.status(400).json({ error: "This booking has already ended and can no longer be cancelled." });
     }
@@ -1420,7 +1420,7 @@ router.delete("/:id/cancel", auth, async (req, res) => {
         .json({ error: `Booking is already ${booking.status}` });
     }
 
-    if (isGuest && inLeaseMinimumTerm(booking)) return res.status(403).json(LEASE_CANCEL_BLOCKED);
+    if (inLeaseMinimumTerm(booking)) return res.status(403).json(LEASE_CANCEL_BLOCKED);
 
     // Once the stay is over there's nothing left to cancel or refund by tier
     // (the booking only flips to "completed" at the next midnight run).
