@@ -259,40 +259,17 @@ cron.schedule("0 * * * *", async () => {
       try {
         const name = draft.host.firstName || draft.host.displayName || "there";
         const resumeUrl = `${process.env.CLIENT_URL}/create-space`;
+        const { renderEmail, blocks, escapeHtml } = require("./utils/emailTemplates");
         await sendEmail({
           to: draft.host.email,
-          subject: "Finish your listing on VenCome",
           text: `Hi ${name}, your listing "${draft.title}" is still saved as a draft. Log in to VenCome and finish it to start receiving bookings: ${resumeUrl}`,
-          html: `
-            <div style="font-family: 'Manrope', Arial, sans-serif; background-color: #f4f4f7; padding: 20px;">
-              <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
-                <div style="background-color: #f0f0f0; padding: 20px; text-align: center;">
-                  <img src="https://vencome.com/VenCome.jpg" alt="VenCome" style="max-width: 150px;">
-                </div>
-                <div style="padding: 30px; color: #333;">
-                  <h2 style="color: #305CDE; text-align: center; margin-top: 0;">Finish your listing 📋</h2>
-                  <p>Hi <strong>${name}</strong>,</p>
-                  <p>Your listing is still saved as a draft and isn't visible to tenants yet. It only takes a few minutes to finish and start receiving bookings.</p>
-                  <div style="background-color: #f5f7ff; padding: 20px; margin: 25px 0; border-radius: 8px;">
-                    <table width="100%" cellpadding="0" cellspacing="0" style="font-size: 14px;">
-                      <tr>
-                        <td style="padding: 6px 0; color: #666;">Listing</td>
-                        <td style="padding: 6px 0; text-align: right; font-weight: 600;">${draft.title}</td>
-                      </tr>
-                    </table>
-                  </div>
-                  <div style="text-align: center; margin: 30px 0;">
-                    <a href="${resumeUrl}" style="display: inline-block; background-color: #305CDE; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px;">Finish My Listing</a>
-                  </div>
-                  <p style="margin-bottom: 0;">We'll keep saving your progress, and remind you again if it's still incomplete.</p>
-                </div>
-                <div style="background-color: #f0f0f0; padding: 20px; text-align: center; font-size: 12px; color: #888;">
-                  This is an automated message, please do not reply.<br />
-                  © ${new Date().getFullYear()} VenCome. All rights reserved.
-                </div>
-              </div>
-            </div>
-          `,
+          ...(await renderEmail("finish_listing", {
+            firstName: name,
+            spaceName: draft.title,
+            details: blocks.details([["Listing", escapeHtml(draft.title)]]),
+            button: blocks.button(resumeUrl, "Finish My Listing"),
+          })),
+          category: "reminder",
         });
         draft.lastReminderSentAt = new Date();
         await draft.save();

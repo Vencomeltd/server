@@ -1,6 +1,7 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { renderEmail, blocks } = require("../utils/emailTemplates");
 const crypto = require("crypto");
 const User = require("../models/User");
 const Property = require("../models/Property");
@@ -74,12 +75,7 @@ router.post("/signup", authLimiter, async (req, res) => {
 
     await sendEmail({
       to: normalizedEmail,
-      subject: "Verify Your Email Address",
-      html: emailTemplate(
-        "Welcome! Verify Your Email",
-        `Your verification code is:`,
-        otp
-      ),
+      ...(await renderEmail("verification", { code: blocks.code(otp) })),
     });
 
     res.json({
@@ -122,12 +118,7 @@ router.post("/login", authLimiter, async (req, res) => {
 
         await sendEmail({
           to: normalizedEmail,
-          subject: "Verify Your Email Address",
-          html: emailTemplate(
-            "Verify Your Email",
-            "Your account hasn't been verified yet. Your verification code is:",
-            otp
-          ),
+          ...(await renderEmail("verification", { code: blocks.code(otp) })),
         });
 
         return res.json({

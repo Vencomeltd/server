@@ -20,7 +20,8 @@ const {
   occupyingBookingFilter,
 } = require("../utils/unitAvailability");
 const { cancelUnpaidBookings } = require("../utils/bookingHold");
-const { sendSeriesDecisionEmail, breakdownRows } = require("../utils/bookingNotifications");
+const { sendSeriesDecisionEmail, breakdownRows, openingHoursRows } = require("../utils/bookingNotifications");
+const { renderEmail, blocks: emailBlocks } = require("../utils/emailTemplates");
 const { recurringDays, ukDay, ukMinutes } = require("../utils/recurrence");
 const { quote: quotePrice, TAX_KEY } = require("../utils/vatPricing");
 const PlatformSettings = require("../models/PlatformSettings");
@@ -1065,29 +1066,24 @@ async function applyBookingDecision(booking, status, io, { paymentHandled = fals
           contentType: "text/calendar",
         };
 
-        sendEmail({
-          to: guestUser.email,
-          subject: "Your booking has been confirmed 🎉",
-          attachments: [calendarAttachment, ...(invoiceAttachment ? [invoiceAttachment] : [])],
-          html: `
-            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
-              <img src="https://vencome.com/VenCome.jpg" alt="VenCome" style="height:40px;margin-bottom:24px;" />
-              <h2 style="color:#0A1628;">Booking Confirmed 🎉</h2>
-              <p>Hi ${guestName},</p>
-              <p>Great news! The host has confirmed your booking for <strong>${prop?.title || "your space"}</strong>.</p>
-              <table style="width:100%;border-collapse:collapse;margin:20px 0;background:#F8F6F0;border-radius:8px;padding:16px;">
+        const confirmation = await renderEmail("booking_confirmation", {
+          firstName: guestName,
+          spaceName: prop?.title || "your space",
+          details: `<table style="width:100%;border-collapse:collapse;margin:20px 0;background:#F8F6F0;border-radius:8px;padding:16px;">
                 <tr><td style="padding:8px 0;color:#666;">Space</td><td style="padding:8px 0;text-align:right;font-weight:700;">${prop?.title || ""}</td></tr>
                 ${fullAddress ? `<tr><td style="padding:8px 0;color:#666;">Full Address</td><td style="padding:8px 0;text-align:right;font-weight:700;color:#305CDE;">${fullAddress}</td></tr>` : ""}
                 <tr><td style="padding:8px 0;color:#666;">Check-in</td><td style="padding:8px 0;text-align:right;font-weight:700;">${new Date(booking.checkIn).toLocaleDateString()}</td></tr>
                 <tr><td style="padding:8px 0;color:#666;">Check-out</td><td style="padding:8px 0;text-align:right;font-weight:700;">${new Date(booking.checkOut).toLocaleDateString()}</td></tr>
+                ${openingHoursRows([booking], prop?.availability)}
                 ${breakdownRows([booking])}
                 <tr><td style="padding:8px 0;color:#666;">Total Paid</td><td style="padding:8px 0;text-align:right;font-weight:700;">£${booking.totalPrice}</td></tr>
-              </table>
-              <p>Your payment is securely held in escrow and will be released to the host after your booking is completed.</p>
-              <a href="https://www.vencome.com/customer/bookings" style="display:inline-block;padding:14px 28px;background:#305CDE;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;">View My Booking</a>
-              <p style="margin-top:24px;color:#6B7280;font-size:13px;">The VenCome Team</p>
-            </div>
-          `,
+              </table>`,
+          button: emailBlocks.button("https://www.vencome.com/customer/bookings", "View My Booking"),
+        });
+        sendEmail({
+          to: guestUser.email,
+          ...confirmation,
+          attachments: [calendarAttachment, ...(invoiceAttachment ? [invoiceAttachment] : [])],
         });
 
         if (guestUser.phoneNumber && guestUser.isPhoneVerified) {
@@ -1139,7 +1135,7 @@ async function applyDecision(booking, status, io) {
   }
 
   const [property, guestUser] = await Promise.all([
-    Property.findById(booking.property?._id || booking.property).select("title location"),
+    Property.findById(booking.property?._id || booking.property).select("title location availability"),
     User.findById(booking.guest?._id || booking.guest).select("email firstName displayName"),
   ]);
   sendSeriesDecisionEmail(series, property, guestUser, status).catch((err) =>
@@ -1628,41 +1624,29 @@ router.delete("/:id/cancel", auth, async (req, res) => {
       const title = booking.property?.title || "the space";
       const when = new Date(booking.checkIn).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
       const nameOf = (u) => u?.displayName || u?.firstName || "there";
-      const shell = (heading, body) => `
-        <div style="font-family:'Manrope',Arial,sans-serif;background:#f4f4f7;padding:20px;">
-          <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;">
-            <div style="background:#f0f0f0;padding:20px;text-align:center;"><img src="https://www.vencome.com/logo-blue.png" alt="VenCome" style="max-width:150px;"></div>
-            <div style="padding:30px;color:#333;"><h2 style="color:#305CDE;text-align:center;margin-top:0;">${heading}</h2>${body}</div>
-          </div>
-        </div>`;
       const refundLine =
         booking.refund.amount > 0
-          ? `A refund of <strong>£${booking.refund.amount.toFixed(2)}</strong> (${refundPercent}%) has been issued to the original payment method.`
+          ? `A refund of £${booking.refund.amount.toFixed(2)} (${refundPercent}%) has been issued to the original payment method.`
           : "No payment was taken for this booking, so there is nothing to refund.";
 
       if (guestUser?.email) {
-        sendEmail({
-          to: guestUser.email,
-          subject: "Your booking has been cancelled",
-          html: shell(
-            "Booking cancelled",
-            `<p>Hi <strong>${nameOf(guestUser)}</strong>,</p><p>${
-              cancelledBy === "host" ? "The host cancelled" : "You cancelled"
-            } your booking at <strong>${title}</strong> on ${when}.</p><p>${refundLine}</p>`
-          ),
-        }).catch((err) => console.error("Cancellation email (guest) failed:", err.message));
+        const email = await renderEmail("cancellation_guest", {
+          firstName: nameOf(guestUser),
+          whoCancelled: cancelledBy === "host" ? "The host cancelled" : "You cancelled",
+          spaceName: title,
+          date: when,
+          refundLine,
+        });
+        sendEmail({ to: guestUser.email, ...email }).catch((err) => console.error("Cancellation email (guest) failed:", err.message));
       }
       if (hostUser?.email) {
-        sendEmail({
-          to: hostUser.email,
-          subject: "A booking has been cancelled",
-          html: shell(
-            "Booking cancelled",
-            `<p>Hi <strong>${nameOf(hostUser)}</strong>,</p><p>${
-              cancelledBy === "host" ? "You cancelled" : "The guest cancelled"
-            } the booking at <strong>${title}</strong> on ${when}. The dates are available again.</p>`
-          ),
-        }).catch((err) => console.error("Cancellation email (host) failed:", err.message));
+        const email = await renderEmail("cancellation_host", {
+          firstName: nameOf(hostUser),
+          whoCancelled: cancelledBy === "host" ? "You cancelled" : "The guest cancelled",
+          spaceName: title,
+          date: when,
+        });
+        sendEmail({ to: hostUser.email, ...email }).catch((err) => console.error("Cancellation email (host) failed:", err.message));
       }
     })().catch((err) => console.error("Cancellation emails failed:", err.message));
 

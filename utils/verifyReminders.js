@@ -8,6 +8,7 @@ const cron = require("node-cron");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const sendEmail = require("./sendEmail");
+const { renderEmail, blocks } = require("./emailTemplates");
 
 const REMINDER_DAYS = 14;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -22,25 +23,16 @@ const unsubscribeToken = (userId) =>
 
 const unsubscribeUrl = (userId) => `${serverUrl()}/api/auth/verify-reminders/unsubscribe?token=${unsubscribeToken(userId)}`;
 
-function reminderHtml(user) {
-  const name = user.displayName || user.firstName || "there";
-  return `<div style="font-family:'Manrope',Arial,sans-serif;background:#f4f4f7;padding:20px;">
-    <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;">
-      <div style="background:#f0f0f0;padding:20px;text-align:center;"><img src="https://www.vencome.com/logo-blue.png" alt="VenCome" style="max-width:150px;"></div>
-      <div style="padding:30px;color:#333;">
-        <h2 style="color:#305CDE;text-align:center;margin-top:0;">Verify your account</h2>
-        <p>Hi <strong>${name}</strong>,</p>
-        <p>You started creating a VenCome account but haven't verified your email yet. Log in with your email and we'll send you a one-time code — it takes less than a minute.</p>
-        <p style="text-align:center;margin:28px 0;"><a href="${clientUrl()}/login" style="background:#305CDE;color:#fff;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;display:inline-block;">Verify my account</a></p>
-        <p style="margin-bottom:0;">The VenCome Team</p>
-      </div>
-      <div style="background:#f0f0f0;padding:20px;text-align:center;font-size:12px;color:#888;">
-        You're receiving this because an account was created with this email on VenCome.<br />
-        <a href="${unsubscribeUrl(user._id)}" style="color:#888;">Unsubscribe from these reminders</a>
-      </div>
-    </div>
-  </div>`;
-}
+// The reminder email (template "verify_reminder"); the unsubscribe link is
+// always in the footer, whatever the template says.
+const reminderEmail = (user) =>
+  renderEmail(
+    "verify_reminder",
+    { firstName: user.displayName || user.firstName || "there", button: blocks.button(`${clientUrl()}/login`, "Verify my account") },
+    {
+      footer: `You're receiving this because an account was created with this email on VenCome.<br><a href="${unsubscribeUrl(user._id)}" style="color:#888;">Unsubscribe from these reminders</a>`,
+    }
+  );
 
 // Everyone due a reminder right now: unverified, signed up in the last
 // REMINDER_DAYS days, not opted out, not banned or a test/internal account,
@@ -58,7 +50,7 @@ async function sendDueVerifyReminders(now = new Date()) {
   let sent = 0;
   for (const user of users) {
     try {
-      await sendEmail({ to: user.email, subject: "Verify your VenCome account", html: reminderHtml(user), category: "reminder" });
+      await sendEmail({ to: user.email, ...(await reminderEmail(user)), category: "reminder" });
       await User.updateOne(
         { _id: user._id },
         { $push: { "verifyReminders.sentAt": now }, $set: { "verifyReminders.lastSentAt": now } }
