@@ -644,6 +644,24 @@ router.delete("/users/:id", async (req, res) => {
   }
 });
 
+// PATCH /users/:id/flag -- { flag: "test" | "internal" | null }. A flagged
+// account is left out of every admin total and chart (isTestAccount); the
+// flag says why. null unflags it.
+router.patch("/users/:id/flag", async (req, res) => {
+  try {
+    const { flag } = req.body;
+    if (![null, "test", "internal"].includes(flag)) return res.status(400).json({ error: "Invalid flag" });
+    const update = flag ? { $set: { isTestAccount: true, accountFlag: flag } } : { $set: { isTestAccount: false }, $unset: { accountFlag: "" } };
+    const user = await User.findByIdAndUpdate(req.params.id, update, { new: true }).select("email isTestAccount accountFlag");
+    if (!user) return res.status(404).json({ error: "User not found" });
+    console.log(`[Audit] Admin ${req.user.id} flagged user ${user._id} (${user.email}) as ${flag || "real"}`);
+    res.json({ success: true, isTestAccount: user.isTestAccount, accountFlag: user.accountFlag || null });
+  } catch (err) {
+    console.error("Admin flag user error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // General account-detail editor for admin -- deliberately scoped to plain
 // identity fields only. Role/permission changes (isAdmin, isHost, ban)
 // already have their own dedicated endpoints above; phoneNumber is
@@ -1102,6 +1120,13 @@ router.get("/bookings", async (req, res) => {
     const status = req.query.status;
 
     const query = status && status !== "all" ? { status } : {};
+    // Same opt-in as GET /users and /properties: the dashboard's totals ask
+    // to leave test and internal accounts' bookings out.
+    if (req.query.excludeTest === "true") {
+      const testUserIds = await User.find({ isTestAccount: true }).distinct("_id");
+      query.guest = { $nin: testUserIds };
+      query.host = { $nin: testUserIds };
+    }
 
     const [bookings, total] = await Promise.all([
       Booking.find(query)

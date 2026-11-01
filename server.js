@@ -38,6 +38,7 @@ const migrateLegacyDeposits = require("./utils/paymentsV2/migrateLegacyDeposits"
 const { isPaymentsV2Enabled } = require("./config/payments");
 const setupScheduledBroadcasts = require("./utils/sendScheduledBroadcasts");
 const setupBookingExpiry = require("./utils/expirePendingBookings");
+const setupVerifyReminders = require("./utils/verifyReminders");
 const setupGoogleCalendarSync = require("./utils/syncGoogleCalendars");
 const setupOutlookCalendarSync = require("./utils/syncOutlookCalendars");
 const setupCalcomCalendarSync = require("./utils/syncCalcomCalendars");
@@ -527,6 +528,7 @@ setupWalletBalanceRelease();
 setupPaymentsScheduler();
 setupScheduledBroadcasts();
 setupBookingExpiry();
+setupVerifyReminders();
 setupGoogleCalendarSync();
 setupOutlookCalendarSync();
 setupCalcomCalendarSync();

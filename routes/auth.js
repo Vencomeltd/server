@@ -191,6 +191,24 @@ router.post("/login", authLimiter, async (req, res) => {
   }
 });
 
+// ─── GET /auth/verify-reminders/unsubscribe ───────────────────────────────────
+// The link in every "Verify your account" reminder (utils/verifyReminders.js).
+// The token only ever carries this purpose, so it can't be used to log in.
+router.get("/verify-reminders/unsubscribe", async (req, res) => {
+  const page = (message) =>
+    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VenCome</title></head>
+    <body style="font-family:Arial,sans-serif;background:#f4f4f7;padding:40px 16px;"><div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:30px;text-align:center;color:#333;">
+    <h2 style="color:#305CDE;margin-top:0;">VenCome</h2><p>${message}</p><p><a href="https://www.vencome.com" style="color:#305CDE;">Go to VenCome</a></p></div></body></html>`;
+  try {
+    const decoded = jwt.verify(String(req.query.token || ""), process.env.JWT_SECRET);
+    if (decoded.purpose !== "verify-reminders-unsubscribe") throw new Error("wrong purpose");
+    await User.updateOne({ _id: decoded.id }, { $set: { "verifyReminders.optedOut": true, "verifyReminders.optedOutAt": new Date() } });
+    res.send(page("You've been unsubscribed. We won't send you any more account verification reminders."));
+  } catch {
+    res.status(400).send(page("This unsubscribe link is invalid or has expired."));
+  }
+});
+
 // ─── POST /auth/verify-login ──────────────────────────────────────────────────
 router.post("/verify-login", otpLimiter, async (req, res) => {
   const { email, otp } = req.body;

@@ -14,6 +14,9 @@ const emailLogSchema = new mongoose.Schema(
     text: { type: String, default: "" },
     html: { type: String, default: "" },
     status: { type: String, enum: ["sent", "failed"], default: "sent" },
+    // What kind of email, for the Communications log filters. Emails logged
+    // before this existed have none and count as transactional.
+    category: { type: String, enum: ["transactional", "reminder", "broadcast"], default: "transactional", index: true },
     errorMessage: { type: String, default: "" },
     sentAt: { type: Date, default: Date.now, index: true },
   },
