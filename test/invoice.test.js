@@ -35,6 +35,10 @@ test("approved invoice uses the logo, tagline and VenCome company details", asyn
   const text = textOf(pdf);
   assert.match(text, /Commercial spaces booked simply/);
   assert.match(text, /17182804/);
+  assert.match(text, /Flat 4, Spring House/);
+  assert.match(text, /Kingston Road/);
+  assert.match(text, /SW19 3NJ/);
+  assert.doesNotMatch(text, /pending confirmation/);
   assert.match(text, /Synthetic Workspaces/);
   assert.doesNotMatch(text, /VAT no\.|GB 000|00000000/);
 });
