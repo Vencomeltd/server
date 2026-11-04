@@ -1,10 +1,17 @@
 const PDFDocument = require("pdfkit");
+const path = require("path");
+
+const COMPANY = {
+  name: "Vencome Ltd",
+  number: "17182804",
+  address: "Flat 4, Spring House\nKingston Road\nLondon, SW19 3NJ\nEngland",
+  email: "support@vencome.com",
+};
 
 async function generateInvoicePDF(booking, property, guest, host) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 50, size: "A4" });
     const chunks = [];
-
     doc.on("data", (chunk) => chunks.push(chunk));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
@@ -12,133 +19,106 @@ async function generateInvoicePDF(booking, property, guest, host) {
     const NAVY = "#0A1628";
     const BLUE = "#305CDE";
     const GREY = "#6B7280";
-    const LIGHT = "#F8F6F0";
-
-    // Header background
-    doc.rect(0, 0, doc.page.width, 120).fill(NAVY);
-
-    // VenCome logo text
-    doc.fontSize(28).fillColor("#FFFFFF").font("Helvetica-Bold")
-      .text("VenCome", 50, 40);
-    doc.fontSize(11).fillColor("rgba(255,255,255,0.7)").font("Helvetica")
-      .text("Commercial Space Marketplace", 50, 75);
-
-    // Invoice label
-    doc.fontSize(22).fillColor("#FFFFFF").font("Helvetica-Bold")
-      .text("INVOICE", doc.page.width - 180, 45, { width: 130, align: "right" });
-
-    const invoiceNumber = `VC-${booking._id.toString().slice(-8).toUpperCase()}`;
-    doc.fontSize(11).fillColor("rgba(255,255,255,0.7)").font("Helvetica")
-      .text(invoiceNumber, doc.page.width - 180, 75, { width: 130, align: "right" });
-
-    // Move below header
-    doc.moveDown(4);
-
-    // Invoice details row
-    const col1 = 50;
-    const col2 = 300;
-    let y = 150;
-
-    doc.fontSize(9).fillColor(GREY).font("Helvetica")
-      .text("DATE ISSUED", col1, y)
-      .text("BOOKING REF", col2, y);
-
-    y += 14;
-    doc.fontSize(11).fillColor(NAVY).font("Helvetica-Bold")
-      .text(new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }), col1, y)
-      .text(invoiceNumber, col2, y);
-
-    y += 30;
-    doc.fontSize(9).fillColor(GREY).font("Helvetica")
-      .text("BILLED TO", col1, y)
-      .text("SPACE", col2, y);
-
-    y += 14;
-    const guestName = guest.displayName || `${guest.firstName || ""} ${guest.lastName || ""}`.trim() || guest.email;
-    doc.fontSize(11).fillColor(NAVY).font("Helvetica-Bold")
-      .text(guestName, col1, y)
-      .text(property.title || "Commercial Space", col2, y);
-
-    y += 16;
-    doc.fontSize(10).fillColor(GREY).font("Helvetica")
-      .text(guest.email, col1, y)
-      .text([property.location?.city, property.location?.country].filter(Boolean).join(", "), col2, y);
-
-    // Divider
-    y += 40;
-    doc.rect(50, y, doc.page.width - 100, 1).fill("#E5E7EB");
-
-    // Table header
-    y += 16;
-    doc.rect(50, y, doc.page.width - 100, 28).fill(LIGHT);
-    doc.fontSize(9).fillColor(GREY).font("Helvetica-Bold")
-      .text("DESCRIPTION", 60, y + 9)
-      .text("DATES", 280, y + 9)
-      .text("DURATION", 380, y + 9)
-      .text("AMOUNT", doc.page.width - 120, y + 9, { width: 70, align: "right" });
-
-    // Table row
-    y += 40;
-    const checkIn = new Date(booking.checkIn).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-    const checkOut = new Date(booking.checkOut).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-    const duration = booking.totalNights
-      ? `${booking.totalNights} day${booking.totalNights !== 1 ? "s" : ""}`
-      : booking.totalHours
-      ? `${booking.totalHours} hour${booking.totalHours !== 1 ? "s" : ""}`
-      : "—";
-
-    doc.fontSize(10).fillColor(NAVY).font("Helvetica-Bold")
-      .text(property.title || "Space Rental", 60, y);
-    doc.fontSize(10).fillColor(GREY).font("Helvetica")
-      .text(`${checkIn} – ${checkOut}`, 280, y)
-      .text(duration, 380, y)
-      .text(`£${booking.totalPrice.toLocaleString()}`, doc.page.width - 120, y, { width: 70, align: "right" });
-
-    // Divider
-    y += 30;
-    doc.rect(50, y, doc.page.width - 100, 1).fill("#E5E7EB");
-
-    // Totals
-    y += 20;
-    // The customer's breakdown (utils/vatPricing.js): core, utilities, VAT.
-    // VenCome's commission is the host's cost, so it isn't shown here.
-    // Bookings made before VAT pricing have no breakdown -- all core.
-    const bd = booking.pricingBreakdown;
+    const LINE = "#E5E7EB";
+    const left = 50;
+    const width = doc.page.width - 100;
+    const right = left + width;
     const money = (pence) => `£${(pence / 100).toFixed(2)}`;
-    const rows = bd?.totalPence
-      ? [
-          ["Core price", money(bd.corePence)],
-          ...(bd.utilitiesPence ? [["Utilities", money(bd.utilitiesPence)]] : []),
-          ...(bd.vatPence ? [[`VAT at ${bd.vatRatePct}%`, money(bd.vatPence)]] : []),
-        ]
-      : [["Subtotal", `£${booking.totalPrice.toLocaleString()}`]];
-    for (const [label, amount] of rows) {
-      doc.fontSize(10).fillColor(GREY).font("Helvetica")
-        .text(label, doc.page.width - 230, y)
-        .text(amount, doc.page.width - 120, y, { width: 70, align: "right" });
-      y += 20;
+    const date = (value) => new Date(value).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Europe/London" });
+    const name = (person) => person?.displayName || [person?.firstName, person?.lastName].filter(Boolean).join(" ") || person?.email || "";
+    const put = (value, x, y, w, size = 9, font = "Helvetica", color = GREY, align = "left") => {
+      doc.font(font).fontSize(size).fillColor(color).text(String(value), x, y, { width: w, align });
+      return doc.y;
+    };
+    const line = (y) => doc.moveTo(left, y).lineTo(right, y).lineWidth(0.6).strokeColor(LINE).stroke();
+    const ref = booking._id.toString().slice(-8).toUpperCase();
+    const invoiceNumber = `VC-${ref}`;
+
+    doc.image(path.join(__dirname, "../assets/vencome-logo-blue.png"), left, 48, { width: 122 });
+    put("Commercial spaces booked simply", left, 91, 260, 9);
+    put("INVOICE", 365, 48, 180, 26, "Helvetica-Bold", NAVY, "right");
+    put(invoiceNumber, 365, 82, 180, 10, "Helvetica", GREY, "right");
+    doc.moveTo(left, 113).lineTo(right, 113).lineWidth(2).strokeColor(BLUE).stroke();
+
+    const metadata = [["INVOICE NUMBER", invoiceNumber], ["ISSUE DATE", date(new Date())], ["BOOKING REFERENCE", ref]];
+    metadata.forEach(([label, value], i) => {
+      put(label, left + i * 170, 133, 150, 8, "Helvetica-Bold");
+      put(value, left + i * 170, 147, 150, 10, "Helvetica-Bold", NAVY);
+    });
+
+    const address = [property.location?.address, property.location?.city, property.location?.country].filter(Boolean).join(", ");
+    const parties = [
+      ["FROM", COMPANY.name, `Company no. ${COMPANY.number}\n${COMPANY.address}\n${COMPANY.email}`],
+      ["BILLED TO (CUSTOMER)", name(guest), [guest.businessVerification?.companyName, guest.email].filter(Boolean).join("\n")],
+      ["HOST", host?.businessVerification?.companyName || name(host) || "Host", [property.title, address].filter(Boolean).join("\n")],
+    ];
+    const columnWidth = (width - 48) / 3;
+    const partyHeight = Math.max(...parties.map(([, title, body]) => {
+      doc.font("Helvetica-Bold").fontSize(10);
+      const titleHeight = doc.heightOfString(title, { width: columnWidth });
+      doc.font("Helvetica").fontSize(9);
+      return 44 + titleHeight + doc.heightOfString(body, { width: columnWidth });
+    }));
+    doc.roundedRect(left, 177, width, partyHeight, 8).fill("#F5F7FF");
+    parties.forEach(([label, title, body], i) => {
+      const x = left + 12 + i * (columnWidth + 12);
+      put(label, x, 191, columnWidth, 8, "Helvetica-Bold");
+      const end = put(title, x, 205, columnWidth, 10, "Helvetica-Bold", NAVY);
+      put(body, x, end + 4, columnWidth, 9, "Helvetica", NAVY);
+    });
+
+    const bd = booking.pricingBreakdown;
+    // Use stored booking amounts. Never reprice an existing booking here.
+    const total = Math.round(Number(booking.totalPrice) * 100);
+    const core = bd?.totalPence ? bd.corePence : total;
+    const utilities = bd?.totalPence ? bd.utilitiesPence || 0 : 0;
+    const vat = bd?.totalPence ? bd.vatPence || 0 : 0;
+    const quantity = booking.totalUnits || booking.totalNights || booking.totalHours || 1;
+    let y = 177 + partyHeight + 19;
+    y = put(`Booking: ${property.title || "Commercial Space"} · ${date(booking.checkIn)} – ${date(booking.checkOut)}`, left, y, width, 9) + 17;
+    put("DESCRIPTION", left + 6, y, 245, 8, "Helvetica-Bold");
+    put("QTY", 306, y, 35, 8, "Helvetica-Bold", GREY, "right");
+    put("RATE", 351, y, 78, 8, "Helvetica-Bold", GREY, "right");
+    put("AMOUNT", 441, y, right - 441, 8, "Helvetica-Bold", GREY, "right");
+    y += 18;
+    doc.moveTo(left, y).lineTo(right, y).lineWidth(1.2).strokeColor(NAVY).stroke();
+
+    const rows = [["Space hire (core price)", quantity, core], ...(utilities ? [["Utilities", quantity, utilities]] : []), ["Service fee", 1, 0]];
+    for (const [label, qty, amount] of rows) {
+      y += 12;
+      put(label, left + 6, y, 245, 10, "Helvetica", NAVY);
+      put(qty, 306, y, 35, 10, "Helvetica", NAVY, "right");
+      put(money(amount / qty), 351, y, 78, 10, "Helvetica", NAVY, "right");
+      put(money(amount), 441, y, right - 441, 10, "Helvetica", NAVY, "right");
+      y += 25;
+      line(y);
     }
 
-    doc.rect(doc.page.width - 230, y, 180, 1).fill("#E5E7EB");
+    y += 18;
+    const totalX = 315;
+    const totalWidth = right - totalX;
+    put("Subtotal (ex VAT)", totalX + 6, y, 145, 9, "Helvetica", NAVY);
+    put(money(core + utilities), totalX, y, totalWidth, 9, "Helvetica", NAVY, "right");
+    y += 21;
+    if (vat) {
+      put(`VAT at ${bd.vatRatePct}%`, totalX + 6, y, 145, 9, "Helvetica", NAVY);
+      put(money(vat), totalX, y, totalWidth, 9, "Helvetica", NAVY, "right");
+      y += 21;
+    }
+    doc.roundedRect(totalX, y, totalWidth, 34, 6).fill(NAVY);
+    put("Total", totalX + 9, y + 10, 80, 12, "Helvetica-Bold", "#FFFFFF");
+    put(money(total), totalX + 90, y + 10, totalWidth - 100, 12, "Helvetica-Bold", "#FFFFFF", "right");
+    y += 45;
+    put(booking.isPaid ? "PAID" : "Payment pending", totalX, y, totalWidth, 9, "Helvetica-Bold", booking.isPaid ? "#059669" : GREY, "right");
 
-    y += 12;
-    doc.fontSize(13).fillColor(NAVY).font("Helvetica-Bold")
-      .text("Total Paid", doc.page.width - 230, y)
-      .text(`£${booking.totalPrice.toLocaleString()}`, doc.page.width - 120, y, { width: 70, align: "right" });
-
-    // Status badge
-    y += 40;
-    doc.rect(50, y, 100, 26).fill("#DCFCE7");
-    doc.fontSize(10).fillColor("#16A34A").font("Helvetica-Bold")
-      .text("✓ PAID", 60, y + 7);
-
-    // Footer
-    const footerY = doc.page.height - 80;
-    doc.rect(0, footerY, doc.page.width, 80).fill(LIGHT);
-    doc.fontSize(9).fillColor(GREY).font("Helvetica")
-      .text("VenCome | www.vencome.com | support@vencome.com", 50, footerY + 20, { align: "center", width: doc.page.width - 100 })
-      .text("This is an automatically generated invoice. Please retain for your records.", 50, footerY + 38, { align: "center", width: doc.page.width - 100 });
-
+    // Keep footer text inside the printable area so PDFKit doesn't add blank pages.
+    const footerY = Math.max(y + 38, doc.page.height - 137);
+    line(footerY);
+    put("Payment terms.", left, footerY + 15, 285, 8, "Helvetica-Bold", NAVY);
+    put("This invoice covers the booking charges shown above. Payments and refunds follow the terms accepted for this booking.", left, footerY + 29, 285, 8);
+    put("Questions about this invoice?", 355, footerY + 15, right - 355, 8, "Helvetica-Bold", NAVY);
+    put(`${COMPANY.email}\nwww.vencome.com`, 355, footerY + 29, right - 355, 8);
+    put(`${COMPANY.name} · Registered in England and Wales · Company no. ${COMPANY.number}`, left, footerY + 70, width, 8);
     doc.end();
   });
 }
