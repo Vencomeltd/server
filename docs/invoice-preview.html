@@ -3,7 +3,7 @@
   Invoice redesign, step 1 (build spec 31 Oct 2026, section 10): an HTML
   preview of the new invoice for client approval. Sample data only. Once
   approved, utils/generateInvoice.js (PDF) is rebuilt to match.
-  Company number and registered address are placeholders until supplied.
+  Company number is confirmed. Registered address is pending confirmation.
 -->
 <html lang="en">
 <head>
@@ -47,7 +47,7 @@
 </style>
 </head>
 <body>
-  <p class="note">Preview with sample booking data. Highlighted fields are placeholders until the company number and registered address are supplied. The VAT number line only appears when a VAT number is set.</p>
+  <p class="note">Preview with sample booking data. The registered address is a placeholder pending confirmation. VenCome has no VAT-number line. Booking VAT, where applicable, remains in the charge breakdown.</p>
 
   <div class="page">
     <header>
@@ -71,10 +71,9 @@
       <div>
         <p class="label">From</p>
         <p><strong>Vencome Ltd</strong><br>
-        Company no. <span class="placeholder">00000000</span><br>
+        Company no. 17182804<br>
         <span class="placeholder">Registered address, London</span><br>
-        support@vencome.com<br>
-        VAT no. <span class="placeholder">GB 000 0000 00</span></p>
+        support@vencome.com</p>
       </div>
       <div>
         <p class="label">Billed to (customer)</p>
@@ -121,7 +120,7 @@
           www.vencome.com
         </div>
       </div>
-      <p style="margin:12px 0 0;">Vencome Ltd · Registered in England and Wales · Company no. <span class="placeholder">00000000</span></p>
+      <p style="margin:12px 0 0;">Vencome Ltd · Registered in England and Wales · Company no. 17182804</p>
     </footer>
   </div>
 </body>
