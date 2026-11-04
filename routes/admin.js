@@ -309,15 +309,21 @@ router.get("/users/counts", async (req, res) => {
 });
 
 router.get("/users", async (req, res) => {
-  const { page = 1, limit = 20, q, role, excludeTest, tab } = req.query;
+  const { page = 1, limit = 20, q, role, status, excludeTest, tab } = req.query;
   const filter = { ...(USER_TABS[tab] || {}) };
   if (q) {
     const pattern = { $regex: String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
     filter.$or = [{ email: pattern }, { firstName: pattern }, { lastName: pattern }, { displayName: pattern }];
   }
-  if (role === "host") filter.isHost = true;
-  if (role === "customer") filter.isHost = { $ne: true };
-  if (role === "admin") filter.isAdmin = true;
+  const roleFilters = { host: { isHost: true }, customer: { isHost: { $ne: true } }, admin: { isAdmin: true } };
+  const statusFilters = {
+    suspended: { isBanned: true },
+    unverified: { isBanned: { $ne: true }, isVerified: { $ne: true } },
+    "pending verification": { isBanned: { $ne: true }, isVerified: true, isHost: true, "businessVerification.status": "under_review" },
+    active: { isBanned: { $ne: true }, isVerified: true, $or: [{ isHost: { $ne: true } }, { "businessVerification.status": { $ne: "under_review" } }] },
+  };
+  const dropdowns = [roleFilters[role], statusFilters[status]].filter(Boolean);
+  if (dropdowns.length) filter.$and = dropdowns;
   // Opt-in only -- the browsable Users list should still surface test
   // accounts so admin can find/manage them, but the dashboard's summary
   // counts (see AdminDashboard.jsx fetchUsers) ask for this explicitly so
