@@ -111,3 +111,34 @@ test("a zip that isn't a VenCome export is refused", () => {
   assert.throws(() => backup.readExport(zip.toBuffer()), /isn't a VenCome export/);
   assert.throws(() => backup.readExport(Buffer.from("not a zip")), /isn't a zip export/);
 });
+
+for (const storageFailure of [false, true]) {
+  test(`weekly backup retention ${storageFailure ? "keeps metadata when storage deletion fails" : "removes an expired backup after deleting its object"}`, async (t) => {
+    const Document = require("../models/Document");
+    const storage = require("../utils/documentStorage");
+    useDb(fakeDb(liveData()).db);
+    const old = { _id: new ObjectId(), key: "synthetic-only/old-backup.zip" };
+    const created = [];
+    const deleted = [];
+    t.mock.method(storage, "putFile", async (_key, buffer, type) => {
+      assert.equal(type, "application/zip");
+      assert.equal(backup.readExport(buffer).manifest.app, "VenCome");
+    });
+    t.mock.method(Document, "create", async (doc) => { created.push(doc); });
+    t.mock.method(Document, "find", (filter) => {
+      assert.deepEqual(filter, { folder: "Backups", uploadedBy: { $exists: false } });
+      return { sort: () => ({ skip: async (keep) => { assert.equal(keep, 8); return [old]; } }) };
+    });
+    t.mock.method(storage, "deleteFile", async (key) => {
+      assert.equal(key, old.key);
+      if (storageFailure) throw new Error("Synthetic storage unavailable");
+    });
+    t.mock.method(Document, "deleteOne", async ({ _id }) => { deleted.push(_id); });
+
+    if (storageFailure) await assert.rejects(backup.saveWeeklyBackup(), /Synthetic storage unavailable/);
+    else await backup.saveWeeklyBackup();
+    assert.equal(created.length, 1);
+    assert.equal(created[0].folder, "Backups");
+    assert.equal(deleted.length, storageFailure ? 0 : 1);
+  });
+}

@@ -97,7 +97,7 @@ async function saveWeeklyBackup() {
 
   const old = await Document.find({ folder: BACKUP_FOLDER, uploadedBy: { $exists: false } }).sort({ createdAt: -1 }).skip(KEEP_BACKUPS);
   for (const doc of old) {
-    await storage.deleteFile(doc.key).catch(() => {});
+    await storage.deleteFile(doc.key);
     await Document.deleteOne({ _id: doc._id });
   }
   console.log(`[Backups] Weekly export saved (${(buffer.length / 1024 / 1024).toFixed(1)} MB), removed ${old.length} old`);

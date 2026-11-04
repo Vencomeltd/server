@@ -112,7 +112,7 @@ router.delete("/folders", [query("path").isString(), query("confirm").equals("tr
     if (!path) return res.status(400).json({ error: "Invalid folder" });
     const docs = await Document.find({ folder: insideFolder(path) });
     for (const doc of docs) {
-      await storage.deleteFile(doc.key).catch((err) => console.error(`[Documents] R2 delete failed for ${doc.key}:`, err.message));
+      await storage.deleteFile(doc.key);
       await Document.deleteOne({ _id: doc._id });
     }
     await DocumentFolder.deleteMany({ path: insideFolder(path) });
@@ -229,7 +229,7 @@ router.delete("/:id", [idParam, query("confirm").equals("true").withMessage("Con
   try {
     const doc = await Document.findById(req.params.id);
     if (!doc) return res.status(404).json({ error: "Document not found" });
-    await storage.deleteFile(doc.key).catch((err) => console.error(`[Documents] R2 delete failed for ${doc.key}:`, err.message));
+    await storage.deleteFile(doc.key);
     await Document.deleteOne({ _id: doc._id });
     audit(req, `deleted document "${doc.folder}/${doc.name}"`);
     res.json({ success: true });
