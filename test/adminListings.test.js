@@ -16,16 +16,26 @@ const listings = [
 ];
 const drafts = [{ _id: 'synthetic-draft', host: 'synthetic-host', createdBy: { email: 'creator@example.test' }, formData: { title: 'Synthetic draft', images: ['synthetic-photo'], pricing: { monthly: 100 } } }];
 const matches = (doc, filter) => Object.entries(filter).every(([key, want]) => {
-  if (want && typeof want === 'object' && '$nin' in want) return !want.$nin.includes(doc[key]);
-  if (want && typeof want === 'object' && '$ne' in want) return doc[key] !== want.$ne;
-  return doc[key] === want;
+  if (key === "$and") return want.every(part => matches(doc, part));
+  if (key === "$or") return want.some(part => matches(doc, part));
+  const have = key.split(".").reduce((value, field) => value?.[field], doc);
+  if (want && typeof want === "object") {
+    if ("$nin" in want) return !want.$nin.includes(have);
+    if ("$in" in want) return want.$in.includes(have);
+    if ("$ne" in want) return have !== want.$ne;
+    if ("$gt" in want) return have > want.$gt;
+    if ("$exists" in want) return (have !== undefined) === want.$exists;
+    if ("$regex" in want) return new RegExp(want.$regex, want.$options).test(have || "");
+  }
+  return want === null ? have == null : have === want;
 });
 const query = (values, single = false) => {
   let offset = 0, size = Infinity, excludeForm = false;
   const q = { populate: () => q, sort: () => q, select: (fields) => { excludeForm = fields === '-formData'; return q; }, skip: (n) => { offset = n; return q; }, limit: (n) => { size = n; return q; }, then: (resolve, reject) => Promise.resolve(single ? values : values.slice(offset, offset + size).map(({ formData, ...rest }) => excludeForm ? rest : { ...rest, formData })).then(resolve, reject) };
   return q;
 };
-User.find = () => ({ distinct: async () => ['synthetic-test-host'] });
+User.find = (filter) => ({ distinct: async () => filter.isTestAccount ? ['synthetic-test-host'] : [] });
+Property.distinct = async (_field, filter) => [...new Set(listings.filter(doc => matches(doc, filter)).map(doc => doc.location?.city))];
 Property.countDocuments = async (filter) => listings.filter(doc => matches(doc, filter)).length;
 Property.find = (filter) => query(listings.filter(doc => matches(doc, filter)));
 Draft.countDocuments = async (filter) => drafts.filter(doc => matches(doc, filter)).length;
@@ -57,4 +67,24 @@ test('draft lists omit heavy form data, detail returns it and creator intact', a
   assert.deepEqual(body.draft.formData, drafts[0].formData);
   assert.equal(body.draft.createdBy.email, 'creator@example.test');
   assert.equal((await get('/drafts/synthetic-missing')).status, 404);
+});
+
+
+test('photo, VAT, location and literal search filters find matches beyond page one', async () => {
+  const extra = Array.from({ length: 55 }, (_, i) => ({ _id: `synthetic-page-${i}`, title: `Synthetic row ${i}`, host: 'synthetic-host', images: ['synthetic-image'], location: { city: 'London' }, pricing: { monthly: 100, vat: { monthly: { status: 'none' } } } }));
+  extra.push({ _id: 'synthetic-target', title: 'Synthetic [target]', host: 'synthetic-host', location: { city: 'Manchester' }, pricing: { monthly: 100 } });
+  listings.push(...extra);
+  try {
+    for (const params of ['city=Manchester', 'q=' + encodeURIComponent('[target]'), 'city=Manchester&noPhotos=true&vatNotSet=true']) {
+      const { status, body } = await get('/properties?limit=50&excludeTest=true&' + params);
+      assert.equal(status, 200);
+      assert.equal(body.total, 1);
+      assert.equal(body.pages, 1);
+      assert.equal(body.properties[0]._id, 'synthetic-target');
+      assert.deepEqual(body.locations, ['London', 'Manchester']);
+    }
+    const { body } = await get('/properties?noPhotos=true&vatNotSet=true');
+    assert.equal(body.total, 1);
+    assert.equal(body.properties[0]._id, 'synthetic-target');
+  } finally { listings.splice(listings.length - extra.length); }
 });
