@@ -88,3 +88,17 @@ test('photo, VAT, location and literal search filters find matches beyond page o
     assert.equal(body.properties[0]._id, 'synthetic-target');
   } finally { listings.splice(listings.length - extra.length); }
 });
+
+
+test('draft pagination exposes records beyond the first hundred', async () => {
+  const extra = Array.from({ length: 105 }, (_, i) => ({ _id: `synthetic-draft-${i + 1}`, title: `Synthetic draft ${i + 1}`, host: 'synthetic-host' }));
+  drafts.push(...extra);
+  try {
+    const { body } = await get('/drafts?page=3&limit=50&excludeTest=true');
+    assert.equal(body.total, 106);
+    assert.equal(body.pages, 3);
+    assert.equal(body.page, 3);
+    assert.equal(body.drafts.length, 6);
+    assert.equal(body.drafts.at(-1)._id, 'synthetic-draft-105');
+  } finally { drafts.splice(drafts.length - extra.length); }
+});
