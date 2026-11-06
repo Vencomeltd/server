@@ -1033,7 +1033,10 @@ async function emailLogFilter({ search, status, audience, type, from, to }) {
   if (from || to) {
     filter.sentAt = {};
     if (from) filter.sentAt.$gte = ukMidnight(from);
-    if (to) filter.sentAt.$lt = new Date(ukMidnight(to).getTime() + 24 * 3600000);
+    if (to) {
+      const nextDay = new Date(new Date(`${to}T00:00:00Z`).getTime() + 24 * 3600000).toISOString().slice(0, 10);
+      filter.sentAt.$lt = ukMidnight(nextDay);
+    }
   }
   if (search) {
     const matchingUsers = await User.find({
