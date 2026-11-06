@@ -1039,17 +1039,18 @@ async function emailLogFilter({ search, status, audience, type, from, to }) {
     }
   }
   if (search) {
+    const pattern = { $regex: String(search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
     const matchingUsers = await User.find({
       $or: [
-        { firstName: { $regex: search, $options: "i" } },
-        { lastName: { $regex: search, $options: "i" } },
-        { displayName: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
+        { firstName: pattern },
+        { lastName: pattern },
+        { displayName: pattern },
+        { email: pattern },
       ],
     }).select("_id");
     filter.$or = [
-      { to: { $regex: search, $options: "i" } },
-      { subject: { $regex: search, $options: "i" } },
+      { to: pattern },
+      { subject: pattern },
       { toUser: { $in: matchingUsers.map((u) => u._id) } },
     ];
   }
@@ -1513,11 +1514,15 @@ router.post("/broadcast", async (req, res) => {
 // GET /admin/broadcast/history — past + scheduled broadcasts, newest first
 router.get("/broadcast/history", async (req, res) => {
   try {
-    const broadcasts = await Broadcast.find()
-      .sort({ createdAt: -1 })
-      .limit(100)
-      .populate("sentBy", "displayName firstName lastName email");
-    res.json({ broadcasts });
+    const filter = req.query.status === "scheduled" ? { status: "scheduled" } : {};
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 100));
+    const [broadcasts, total] = await Promise.all([
+      Broadcast.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit)
+        .populate("sentBy", "displayName firstName lastName email"),
+      Broadcast.countDocuments(filter),
+    ]);
+    res.json({ broadcasts, total, page, pages: Math.ceil(total / limit) });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }
