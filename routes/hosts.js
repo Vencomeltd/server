@@ -3,6 +3,7 @@ const User = require("../models/User");
 const Property = require("../models/Property");
 const auth = require("../middleware/auth");
 const { generateUniqueSlug } = require("../utils/slugify");
+const { publicHost, HOST_NAME_FIELDS } = require("../utils/hostName");
 const router = express.Router();
 
 // ✅ 5-step host onboarding checklist — computed live from real account state,
@@ -91,7 +92,7 @@ router.get("/:hostId", async (req, res) => {
     // ObjectId (older/shared links) -- same dual-lookup Property.slug uses.
     const isObjectId = /^[0-9a-fA-F]{24}$/.test(hostId);
     const selectFields =
-      "firstName lastName displayName profileImage bio createdAt businessVerified slug businessVerification.companyName accountFlag";
+      `firstName lastName displayName profileImage bio createdAt businessVerified slug ${HOST_NAME_FIELDS}`;
     const host = isObjectId
       ? await User.findById(hostId).select(selectFields)
       : await User.findOne({ slug: hostId }).select(selectFields);
@@ -135,7 +136,7 @@ router.get("/:hostId", async (req, res) => {
       totalReviews > 0 ? (totalRating / totalReviews).toFixed(1) : null;
 
     res.json({
-      ...host.toObject(),
+      ...publicHost(host),
       totalListings,
       avgRating,
       totalReviews,

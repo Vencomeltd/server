@@ -1,5 +1,6 @@
 const express = require("express");
 const { generateInvoicePDF } = require("../utils/generateInvoice");
+const { publicHost, publicHostPopulate, HOST_NAME_FIELDS } = require("../utils/hostName");
 const Booking = require("../models/Booking");
 const Property = require("../models/Property");
 const Payment = require("../models/Payment");
@@ -550,7 +551,7 @@ async function createBooking({
   }
   if (dryRun) return { status: 200, body: booking };
   await booking.save();
-  await booking.populate(["guest", "property", "host"]);
+  await booking.populate(["guest", "property", { path: "host", select: `firstName lastName displayName profileImage ${HOST_NAME_FIELDS}` }]);
 
   // 10. Block dates if instantly confirmed
   if (booking.status === "confirmed") {
@@ -578,7 +579,7 @@ async function createBooking({
   // moved out of here so a request that never gets paid for doesn't
   // notify anyone about it. See utils/bookingNotifications.js.
 
-  return res.status(201).json(booking);
+  return res.status(201).json({ ...booking.toJSON(), host: publicHost(booking.host) });
 }
 
 router.post(
@@ -826,7 +827,7 @@ router.get("/", auth, async (req, res) => {
   try {
     const bookings = await Booking.find({ guest: req.user.id })
       .populate("property", "title coverImage")
-      .populate("host", "firstName lastName displayName profileImage")
+      .populate(publicHostPopulate("firstName lastName displayName profileImage"))
       .sort({ createdAt: -1 });
     res.json(bookings);
   } catch (err) {
