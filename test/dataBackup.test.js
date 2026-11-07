@@ -190,3 +190,9 @@ test("card and bank account numbers stay out of the export at any depth", () => 
   assert.equal(user.payoutMethods[0].bankAccount.routingNumber, undefined);
   assert.equal(user.payoutMethods[0].bankAccount.accountName, "Synthetic");
 });
+
+test("iCal import URLs stay out of the export inside saved drafts too", () => {
+  const draft = backup.strip({ formData: { title: "Synthetic draft", icalUrl: "https://example.test/feed.ics?k=privatekey" } });
+  assert.equal(draft.formData.icalUrl, undefined);
+  assert.equal(draft.formData.title, "Synthetic draft");
+});

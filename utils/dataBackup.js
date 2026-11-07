@@ -19,7 +19,7 @@ const Document = require("../models/Document");
 const storage = require("./documentStorage");
 
 const { EJSON } = mongoose.mongo.BSON;
-const SENSITIVE_KEY = /password|token|secret|otp|apikey|api_key|cardnumber|accountnumber|routingnumber/i;
+const SENSITIVE_KEY = /password|token|secret|otp|apikey|api_key|cardnumber|accountnumber|routingnumber|icalurl/i;
 const BACKUP_FOLDER = "Backups";
 const KEEP_BACKUPS = 8;
 
