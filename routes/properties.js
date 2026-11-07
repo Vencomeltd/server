@@ -793,14 +793,29 @@ router.get("/", async (req, res) => {
   }
 });
 
-function haversineDistanceKm(lat1, lon1, lat2, lon2) {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+// Great-circle distance in km from a fixed point to the listing's
+// coordinates, as an aggregation expression so MongoDB can sort every
+// active listing by distance (coordinates are plain {latitude, longitude}
+// numbers with no geo index, so $geoNear isn't available). null when the
+// listing has no coordinates yet.
+function distanceKmExpression(lat, lng) {
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const lat2 = { $degreesToRadians: "$coordinates.latitude" };
+  const halfDLat = { $divide: [{ $subtract: [lat2, toRad(lat)] }, 2] };
+  const halfDLng = { $divide: [{ $degreesToRadians: { $subtract: ["$coordinates.longitude", lng] } }, 2] };
+  const a = {
+    $add: [
+      { $pow: [{ $sin: halfDLat }, 2] },
+      { $multiply: [Math.cos(toRad(lat)), { $cos: lat2 }, { $pow: [{ $sin: halfDLng }, 2] }] },
+    ],
+  };
+  return {
+    $cond: [
+      { $and: [{ $isNumber: "$coordinates.latitude" }, { $isNumber: "$coordinates.longitude" }] },
+      { $multiply: [2 * 6371, { $asin: { $sqrt: { $min: [a, 1] } } }] },
+      null,
+    ],
+  };
 }
 
 // Homepage's "Popular Spaces Near You" reused the exact same unsorted
@@ -817,40 +832,36 @@ router.get("/near-me", async (req, res) => {
     const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
     const geo = geoip.lookup(ip);
 
-    const properties = await Property.find({ isActive: true })
-      .select("-blockedDates") // list view, see GET / above
-      .populate(publicHostPopulate("firstName lastName displayName profileImage"))
-      .populate("category", "name")
-      .populate("categories", "name")
-      .limit(100);
+    const listQuery = (filter) =>
+      Property.find(filter)
+        .select("-blockedDates") // list view, see GET / above
+        .populate(publicHostPopulate("firstName lastName displayName profileImage"))
+        .populate("category", "name")
+        .populate("categories", "name");
 
     if (!geo?.ll) {
+      const properties = await listQuery({ isActive: true }).limit(100);
       return res.json({ success: true, properties, sorted: false });
     }
 
-    const [visitorLat, visitorLng] = geo.ll;
-    const withDistance = properties.map((property) => {
-      const lat = property.coordinates?.latitude;
-      const lng = property.coordinates?.longitude;
-      const distance =
-        typeof lat === "number" && typeof lng === "number"
-          ? haversineDistanceKm(visitorLat, visitorLng, lat, lng)
-          : null;
-      return { property, distance };
-    });
-
+    // The nearest 100 of all active listings, sorted in the database.
     // Listings without coordinates yet (geocoding gap) sink to the end
     // rather than being dropped, so they're still discoverable.
-    withDistance.sort((a, b) => {
-      if (a.distance === null && b.distance === null) return 0;
-      if (a.distance === null) return 1;
-      if (b.distance === null) return -1;
-      return a.distance - b.distance;
-    });
+    const [visitorLat, visitorLng] = geo.ll;
+    const nearest = await Property.aggregate([
+      { $match: { isActive: true } },
+      { $project: { distance: distanceKmExpression(visitorLat, visitorLng) } },
+      { $addFields: { hasDistance: { $cond: [{ $eq: ["$distance", null] }, 0, 1] } } },
+      { $sort: { hasDistance: -1, distance: 1, _id: 1 } },
+      { $limit: 100 },
+    ]);
+    const order = new Map(nearest.map((n, i) => [String(n._id), i]));
+    const properties = (await listQuery({ _id: { $in: nearest.map((n) => n._id) } }))
+      .sort((a, b) => order.get(String(a._id)) - order.get(String(b._id)));
 
     res.json({
       success: true,
-      properties: withDistance.map((w) => w.property),
+      properties,
       sorted: true,
       visitorCity: geo.city || null,
     });
