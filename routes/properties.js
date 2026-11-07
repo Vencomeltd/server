@@ -24,6 +24,15 @@ const geoip = require("geoip-lite");
 const { generateUniqueSlug, generateSlug } = require("../utils/slugify");
 
 const { buildUnitTax } = require("../utils/vatPricing");
+
+// minBookingHours from the listing editor: a whole number of hours, 0-24
+// (0 = no minimum). Returns undefined when not sent, null when invalid.
+const parseMinBookingHours = (value) => {
+  if (value === undefined) return undefined;
+  const hours = Number(value);
+  return Number.isInteger(hours) && hours >= 0 && hours <= 24 ? hours : null;
+};
+const MIN_BOOKING_HOURS_ERROR = "Minimum booking hours must be a whole number from 0 to 24";
 const router = express.Router();
 
 // pricing.vat from the listing form: every figure is recomputed here (never
@@ -334,6 +343,11 @@ router.post(
         return res.status(400).json({ error: "iCal URL must start with http:// or https://" });
       }
 
+      const minBookingHours = parseMinBookingHours(req.body.minBookingHours);
+      if (minBookingHours === null) {
+        return res.status(400).json({ error: MIN_BOOKING_HOURS_ERROR });
+      }
+
       // Optional listing-specific terms (separate from the platform-wide
       // Terms & Conditions) -- plain text, not required.
       const listingTerms = typeof req.body.listingTerms === "string" ? req.body.listingTerms.trim() : "";
@@ -581,6 +595,7 @@ router.post(
         depositPolicy,
         timeBlocks,
         unitsCount: parseInt(req.body.unitsCount, 10) || 1,
+        minBookingHours,
         blockedDates: blockedDates.map((d) => ({
           start: new Date(d.start),
           end: new Date(d.end),
@@ -1478,6 +1493,16 @@ router.put(
 
     const { title, description, category } = req.body;
 
+    const minBookingHours = parseMinBookingHours(req.body.minBookingHours);
+    if (minBookingHours === null) {
+      cleanupTempFiles([
+        ...(req.files?.images || []),
+        ...(req.files?.leaseFile || []),
+        ...(req.files?.video || []),
+      ]);
+      return res.status(400).json({ error: MIN_BOOKING_HOURS_ERROR });
+    }
+
     if (req.body.availability) {
       try {
         availability =
@@ -1587,6 +1612,7 @@ router.put(
     if (req.body.unitsCount !== undefined) {
       property.unitsCount = parseInt(req.body.unitsCount, 10) || 1;
     }
+    if (minBookingHours !== undefined) property.minBookingHours = minBookingHours;
     // FIX: availability and blockedDates were missing from PUT
     if (availability) property.availability = availability;
     if (deposit) property.deposit = { enabled: !!deposit.enabled, amount: deposit.enabled ? Number(deposit.amount) || 0 : 0 };

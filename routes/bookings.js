@@ -322,6 +322,13 @@ async function createBooking({
     if (diffHours < 1) {
       return res.status(400).json({ error: "Minimum 1 hour required" });
     }
+    const minBookingHours = Number(property.minBookingHours) || 0;
+    if (minBookingHours > 0 && diffHours < minBookingHours) {
+      return res.status(400).json({
+        error: `This space has a minimum booking of ${minBookingHours} hour${minBookingHours === 1 ? "" : "s"}`,
+        minBookingHours,
+      });
+    }
     if (hourlyPrice <= 0) {
       return res.status(400).json({ error: "Hourly price not configured for this space" });
     }

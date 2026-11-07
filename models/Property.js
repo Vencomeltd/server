@@ -282,6 +282,11 @@ const propertySchema = new mongoose.Schema(
     // identical chairs listed as one page) -- default 1 preserves today's
     // single-unit behavior exactly for every existing listing.
     unitsCount: { type: Number, default: 1, min: 1 },
+    // Shortest hourly booking the host accepts, in whole hours. Missing or 0
+    // means no minimum. (customAvailability.minBookingHours above defaults
+    // to 2 on every listing without the host ever choosing it, so it can't
+    // be enforced without suddenly blocking 1-hour bookings everywhere.)
+    minBookingHours: { type: Number, min: 0, max: 24 },
     blockedDates: [
       {
         start: { type: Date, required: true },
