@@ -142,3 +142,38 @@ for (const storageFailure of [false, true]) {
     assert.equal(deleted.length, storageFailure ? 0 : 1);
   });
 }
+
+test("email bodies (one-time codes, action links) and iCal import URLs stay out of the export; restore keeps the live ones", async () => {
+  const AdmZip = require("adm-zip");
+  const code = "482913";
+  const log = {
+    _id: new ObjectId(),
+    to: "synthetic@example.com",
+    subject: "Admin Login Verification Code",
+    text: `Your code is ${code}`,
+    html: `<p style="font-size:28px">${code}</p><a href="https://example.com/act?k=zz9">Approve</a>`,
+    status: "sent",
+    category: "transactional",
+    sentAt: created,
+  };
+  const property = { _id: new ObjectId(), title: "Synthetic studio", icalUrl: "https://example.com/ical/feed.ics?s=privatefeedkey", createdAt: created };
+  const live = { emaillogs: [log], properties: [property] };
+  useDb(fakeDb(live).db);
+  const zip = await backup.buildExport();
+  for (const entry of new AdmZip(zip).getEntries()) {
+    const body = entry.getData().toString("utf8");
+    assert.doesNotMatch(body, new RegExp(code), entry.entryName);
+    assert.doesNotMatch(body, /zz9|privatefeedkey/, entry.entryName);
+  }
+  const { collections } = backup.readExport(zip);
+  const [exported] = collections.emaillogs;
+  assert.equal(exported.subject, "Admin Login Verification Code");
+  assert.equal(exported.to, "synthetic@example.com");
+  assert.equal(exported.status, "sent");
+  assert.equal(exported.sentAt.getTime(), created.getTime());
+  assert.equal(collections.properties[0].title, "Synthetic studio");
+
+  const { summary } = await backup.planRestore(collections);
+  assert.equal(summary.emaillogs.same, 1); // a missing body never wipes the live one
+  assert.equal(summary.properties.same, 1);
+});
