@@ -901,7 +901,7 @@ router.get("/properties", async (req, res) => {
   const conditions = [];
   if (q) {
     const pattern = { $regex: String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
-    const hosts = await User.find({ $or: ["firstName", "lastName", "displayName", "businessVerification.companyName"].map((key) => ({ [key]: pattern })) }).distinct("_id");
+    const hosts = await User.find({ $or: ["firstName", "lastName", "displayName", "email", "businessVerification.companyName"].map((key) => ({ [key]: pattern })) }).distinct("_id");
     conditions.push({ $or: ["title", "location.city", "location.neighborhood", "location.address"].map((key) => ({ [key]: pattern })).concat({ host: { $in: hosts } }) });
   }
   if (city) filter["location.city"] = city;

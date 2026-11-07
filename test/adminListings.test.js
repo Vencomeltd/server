@@ -34,7 +34,8 @@ const query = (values, single = false) => {
   const q = { populate: () => q, sort: () => q, select: (fields) => { excludeForm = fields === '-formData'; return q; }, skip: (n) => { offset = n; return q; }, limit: (n) => { size = n; return q; }, then: (resolve, reject) => Promise.resolve(single ? values : values.slice(offset, offset + size).map(({ formData, ...rest }) => excludeForm ? rest : { ...rest, formData })).then(resolve, reject) };
   return q;
 };
-User.find = (filter) => ({ distinct: async () => filter.isTestAccount ? ['synthetic-test-host'] : [] });
+const users = [{ _id: 'synthetic-email-host', email: 'owner@synthetic.example.test' }];
+User.find = (filter) => ({ distinct: async () => filter.isTestAccount ? ['synthetic-test-host'] : users.filter(doc => matches(doc, filter)).map(doc => doc._id) });
 Property.distinct = async (_field, filter) => [...new Set(listings.filter(doc => matches(doc, filter)).map(doc => doc.location?.city))];
 Property.countDocuments = async (filter) => listings.filter(doc => matches(doc, filter)).length;
 Property.find = (filter) => query(listings.filter(doc => matches(doc, filter)));
@@ -101,4 +102,15 @@ test('draft pagination exposes records beyond the first hundred', async () => {
     assert.equal(body.drafts.length, 6);
     assert.equal(body.drafts.at(-1)._id, 'synthetic-draft-105');
   } finally { drafts.splice(drafts.length - extra.length); }
+});
+
+
+test('listing search matches the host email', async () => {
+  listings.push({ _id: 'synthetic-email-listing', title: 'Synthetic email listing', host: 'synthetic-email-host', isActive: true });
+  try {
+    const { status, body } = await get('/properties?excludeTest=true&q=' + encodeURIComponent('owner@synthetic'));
+    assert.equal(status, 200);
+    assert.equal(body.total, 1);
+    assert.equal(body.properties[0]._id, 'synthetic-email-listing');
+  } finally { listings.pop(); }
 });
