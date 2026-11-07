@@ -77,7 +77,9 @@ const allowedOrigins = [
 // any preview build was silently CORS-blocked, which is indistinguishable
 // client-side from a real 404 (PropertyDetails.jsx shows "not found" for
 // any failed fetch), so every page looked broken on preview.
-const vercelPreviewOriginPattern = /^https:\/\/client-[a-z0-9]+-ven-come\.vercel\.app$/;
+// Also the per-branch alias (client-git-<branch>-ven-come.vercel.app), which
+// always serves the branch's latest build, so one sign-in survives pushes.
+const vercelPreviewOriginPattern = /^https:\/\/client-(?:[a-z0-9]+|git-[a-z0-9-]+)-ven-come\.vercel\.app$/;
 const isAllowedOrigin = (origin) =>
   !origin || allowedOrigins.includes(origin) || vercelPreviewOriginPattern.test(origin);
 const corsOriginCheck = (origin, callback) =>

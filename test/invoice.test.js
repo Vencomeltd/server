@@ -23,7 +23,7 @@ const sample = () => ({
   },
   property: { title: "Agent-created QA office", location: { address: "12 Example Street", city: "London", country: "United Kingdom" } },
   guest: { displayName: "Sam Taylor", businessVerification: { companyName: "Taylor Design Studio Ltd" }, email: "sam@example.com" },
-  host: { businessVerification: { companyName: "Synthetic Workspaces" }, email: "host@example.com" },
+  host: { firstName: "Alex", businessVerification: { companyName: "Synthetic Workspaces", status: "verified" }, email: "host@example.com" },
 });
 const render = (s) => generateInvoicePDF(s.booking, s.property, s.guest, s.host);
 
@@ -67,4 +67,14 @@ test("monthly invoices use the saved billing units rather than the number of day
   Object.assign(s.booking, { pricingUnit: "month", totalUnits: 1, totalNights: 30, totalPrice: 869.4 });
   s.booking.pricingBreakdown = { corePence: 72450, utilitiesPence: 0, vatPence: 14490, vatRatePct: 20, totalPence: 86940 };
   assert.match(textOf(await render(s)), /Space hire \(core price\)1£724\.50£724\.50/);
+});
+
+test("the host line shows a business name only once it is verified", async () => {
+  for (const status of ["pending", "rejected", undefined]) {
+    const s = sample();
+    s.host.businessVerification.status = status;
+    const text = textOf(await render(s));
+    assert.doesNotMatch(text, /Synthetic Workspaces/, String(status));
+    assert.match(text, /Alex/, String(status));
+  }
 });

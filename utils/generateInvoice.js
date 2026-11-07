@@ -1,5 +1,6 @@
 const PDFDocument = require("pdfkit");
 const path = require("path");
+const { hostPublicName } = require("./hostName");
 
 const COMPANY = {
   name: "Vencome Ltd",
@@ -50,7 +51,7 @@ async function generateInvoicePDF(booking, property, guest, host) {
     const parties = [
       ["FROM", COMPANY.name, `Company no. ${COMPANY.number}\n${COMPANY.address}\n${COMPANY.email}`],
       ["BILLED TO (CUSTOMER)", name(guest), [guest.businessVerification?.companyName, guest.email].filter(Boolean).join("\n")],
-      ["HOST", host?.businessVerification?.companyName || name(host) || "Host", [property.title, address].filter(Boolean).join("\n")],
+      ["HOST", hostPublicName(host), [property.title, address].filter(Boolean).join("\n")],
     ];
     const columnWidth = (width - 48) / 3;
     const partyHeight = Math.max(...parties.map(([, title, body]) => {
