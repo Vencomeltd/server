@@ -7,7 +7,36 @@ const User = require("../models/User");
 const auth = require("../middleware/auth");
 const sendEmail = require("../utils/sendEmail");
 const containsBlockedContent = require("../utils/messageFilter");
+const { escapeHtml } = require("../utils/emailTemplates");
 const router = express.Router();
+
+// Email a message recipient at their own account email (spec section 6:
+// customer messages always reach the host's own inbox).
+function emailNewMessage(recipientId, text, conversationId, recipientIsHost) {
+  User.findById(recipientId)
+    .select("email displayName firstName")
+    .then((recipientUser) => {
+      if (!recipientUser?.email) return;
+      const recipientName = escapeHtml(recipientUser.displayName || recipientUser.firstName || "there");
+      return sendEmail({
+        to: recipientUser.email,
+        subject: "New message on VenCome",
+        html: `<div style="font-family:'Manrope',Arial,sans-serif;background:#f4f4f7;padding:20px;">
+          <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;">
+            <div style="background:#f0f0f0;padding:20px;text-align:center;"><img src="${process.env.CLIENT_URL}/logo-blue.png" alt="VenCome" style="max-width:150px;"></div>
+            <div style="padding:30px;color:#333;">
+              <h2 style="color:#305CDE;">New message</h2>
+              <p>Hi ${recipientName}, you have a new message on VenCome:</p>
+              <p style="background:#F8F6F0;border-radius:8px;padding:16px;color:#111827;white-space:pre-line;">${escapeHtml(text.slice(0, 200))}</p>
+              <a href="${process.env.CLIENT_URL}/${recipientIsHost ? "dashboard" : "customer"}/messages/${conversationId}" style="display:inline-block;margin-top:8px;padding:12px 24px;background:#0A1628;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;">View message</a>
+            </div>
+            <div style="background:#f0f0f0;padding:20px;text-align:center;font-size:12px;color:#888;">© ${new Date().getFullYear()} VenCome. All rights reserved.</div>
+          </div>
+        </div>`,
+      });
+    })
+    .catch((err) => console.error("New message email failed:", err.message));
+}
 
 // GET: Get all conversations for current user
 router.get("/conversations", auth, async (req, res) => {
@@ -195,6 +224,10 @@ router.post("/enquiry", auth, async (req, res) => {
       lastMessageAt: new Date(),
     });
 
+    // The enquiry is the customer's first message -- the host must get it by
+    // email like any other message.
+    emailNewMessage(property.host._id, enquiryText, conversation._id, true);
+
     res.json({ conversation, message: msg });
   } catch (err) {
     console.error("Create enquiry error:", err);
@@ -299,31 +332,7 @@ router.post("/", auth, async (req, res) => {
         conversationSocketIds &&
         [...recipientSocketIds].some((id) => conversationSocketIds.has(id));
 
-      if (!recipientViewing) {
-        User.findById(recipientId)
-          .select("email displayName firstName")
-          .then((recipientUser) => {
-            if (!recipientUser?.email) return;
-            const recipientName = recipientUser.displayName || recipientUser.firstName || "there";
-            sendEmail({
-              to: recipientUser.email,
-              subject: "New message on VenCome",
-              html: `<div style="font-family:'Manrope',Arial,sans-serif;background:#f4f4f7;padding:20px;">
-                <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;">
-                  <div style="background:#f0f0f0;padding:20px;text-align:center;"><img src="${process.env.CLIENT_URL}/logo-blue.png" alt="VenCome" style="max-width:150px;"></div>
-                  <div style="padding:30px;color:#333;">
-                    <h2 style="color:#305CDE;">New message</h2>
-                    <p>Hi ${recipientName}, you have a new message on VenCome:</p>
-                    <p style="background:#F8F6F0;border-radius:8px;padding:16px;color:#111827;">${text.slice(0, 200)}</p>
-                    <a href="${process.env.CLIENT_URL}/${recipientIsHost ? "dashboard" : "customer"}/messages/${conversationId}" style="display:inline-block;margin-top:8px;padding:12px 24px;background:#0A1628;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;">View message</a>
-                  </div>
-                  <div style="background:#f0f0f0;padding:20px;text-align:center;font-size:12px;color:#888;">© ${new Date().getFullYear()} VenCome. All rights reserved.</div>
-                </div>
-              </div>`,
-            }).catch((err) => console.error("New message email failed:", err.message));
-          })
-          .catch((err) => console.error("Recipient lookup for message email failed:", err.message));
-      }
+      if (!recipientViewing) emailNewMessage(recipientId, text, conversationId, recipientIsHost);
     }
 
     res.json(message);

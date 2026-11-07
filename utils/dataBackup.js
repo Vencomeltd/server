@@ -2,8 +2,9 @@
 //
 // Export: one zip with every collection as Extended JSON (types such as ids
 // and dates survive a round trip), CSVs of the key collections, and a
-// manifest. Password hashes, tokens, secrets and one-time codes are stripped
-// from everything. A weekly copy goes to the Documents drive ("Backups"),
+// manifest. Password hashes, tokens, secrets, one-time codes and card or bank numbers are stripped
+// from everything, including logged email bodies (which carry login codes and
+// action links). A weekly copy goes to the Documents drive ("Backups"),
 // keeping the last 8.
 //
 // Restore: from an uploaded export, always as a dry run first (what would be
@@ -18,7 +19,7 @@ const Document = require("../models/Document");
 const storage = require("./documentStorage");
 
 const { EJSON } = mongoose.mongo.BSON;
-const SENSITIVE_KEY = /password|token|secret|otp|apikey|api_key/i;
+const SENSITIVE_KEY = /password|token|secret|otp|apikey|api_key|cardnumber|accountnumber|routingnumber/i;
 const BACKUP_FOLDER = "Backups";
 const KEEP_BACKUPS = 8;
 
@@ -31,6 +32,20 @@ function strip(value) {
     return out;
   }
   return value;
+}
+
+// Fields that carry codes or private links under an innocent name: logged
+// email bodies (login codes, action links) and iCal import URLs (a private
+// feed key in the URL). The rest of each document (to, subject, dates) stays.
+const STRIP_FIELDS = { emaillogs: ["text", "html"], properties: ["icalUrl"] };
+
+function stripDocs(collection, docs) {
+  const drop = STRIP_FIELDS[collection] || [];
+  return docs.map((doc) => {
+    const out = strip(doc);
+    for (const field of drop) delete out[field];
+    return out;
+  });
 }
 
 const get = (doc, path) => path.split(".").reduce((v, k) => (v == null ? v : v[k]), doc);
@@ -57,7 +72,7 @@ async function readCollections() {
   const db = mongoose.connection.db;
   const names = (await db.listCollections({}, { nameOnly: true }).toArray()).map((c) => c.name).filter((n) => !n.startsWith("system."));
   const data = {};
-  for (const name of names.sort()) data[name] = (await db.collection(name).find({}).toArray()).map(strip);
+  for (const name of names.sort()) data[name] = stripDocs(name, await db.collection(name).find({}).toArray());
   return data;
 }
 
@@ -83,7 +98,7 @@ async function buildExport() {
 async function buildCsv(file) {
   const entry = CSV_EXPORTS.find(([name]) => name === file);
   if (!entry) return null;
-  const docs = (await mongoose.connection.db.collection(entry[1]).find({}).toArray()).map(strip);
+  const docs = stripDocs(entry[1], await mongoose.connection.db.collection(entry[1]).find({}).toArray());
   return toCsv(docs, entry[2]);
 }
 

@@ -896,9 +896,21 @@ router.get("/properties/counts", async (req, res) => {
 });
 
 router.get("/properties", async (req, res) => {
-  const { page = 1, limit = 20, q, moderationStatus, excludeTest, status } = req.query;
+  const { page = 1, limit = 20, q, moderationStatus, excludeTest, status, city, noPhotos, vatNotSet } = req.query;
   const filter = { ...(LISTING_STATUS[status] || {}) };
-  if (q) filter.title = { $regex: q, $options: "i" };
+  const conditions = [];
+  if (q) {
+    const pattern = { $regex: String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
+    const hosts = await User.find({ $or: ["firstName", "lastName", "displayName", "email", "businessVerification.companyName"].map((key) => ({ [key]: pattern })) }).distinct("_id");
+    conditions.push({ $or: ["title", "location.city", "location.neighborhood", "location.address"].map((key) => ({ [key]: pattern })).concat({ host: { $in: hosts } }) });
+  }
+  if (city) filter["location.city"] = city;
+  if (noPhotos === "true") conditions.push({ "images.0": { $exists: false }, $or: [{ coverImage: { $exists: false } }, { coverImage: { $in: [null, ""] } }] });
+  if (vatNotSet === "true") {
+    const keys = { hourly: ["hourly", "hourlyPrice"], daily: ["daily", "weekdayPrice"], weekly: ["weekly"], monthly: ["monthly"] };
+    conditions.push({ $or: Object.entries(keys).map(([unit, fields]) => ({ $and: [{ $or: fields.map((key) => ({ [`pricing.${key}`]: { $gt: 0 } })) }, { [`pricing.vat.${unit}`]: null }] })) });
+  }
+  if (conditions.length) filter.$and = conditions;
   // Lets the moderation queue query platform-wide regardless of whatever
   // page the main "all listings" browser happens to be on, instead of the
   // queue being derived by filtering just the current page's 50 results.
@@ -908,14 +920,15 @@ router.get("/properties", async (req, res) => {
   // the "Total Listings" summary count asks for this explicitly.
   if (excludeTest === "true") filter.host = await testHostFilter();
   const skip = (parseInt(page) - 1) * parseInt(limit);
-  const [properties, total] = await Promise.all([
+  const [properties, total, locations] = await Promise.all([
     Property.find(filter)
       .populate("host", "firstName lastName email displayName businessVerification.companyName isTestAccount accountFlag")
       .populate("createdBy", "firstName lastName email displayName")
       .populate("category", "name").sort({ order: 1, createdAt: -1 }).skip(skip).limit(parseInt(limit)),
     Property.countDocuments(filter),
+    Property.distinct("location.city", excludeTest === "true" ? { host: filter.host } : {}),
   ]);
-  res.json({ properties, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
+  res.json({ properties, total, locations: locations.filter(Boolean).sort(), page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
 });
 
 // Lists saved-but-unpublished listing drafts across all hosts, oldest
@@ -1020,20 +1033,24 @@ async function emailLogFilter({ search, status, audience, type, from, to }) {
   if (from || to) {
     filter.sentAt = {};
     if (from) filter.sentAt.$gte = ukMidnight(from);
-    if (to) filter.sentAt.$lt = new Date(ukMidnight(to).getTime() + 24 * 3600000);
+    if (to) {
+      const nextDay = new Date(new Date(`${to}T00:00:00Z`).getTime() + 24 * 3600000).toISOString().slice(0, 10);
+      filter.sentAt.$lt = ukMidnight(nextDay);
+    }
   }
   if (search) {
+    const pattern = { $regex: String(search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
     const matchingUsers = await User.find({
       $or: [
-        { firstName: { $regex: search, $options: "i" } },
-        { lastName: { $regex: search, $options: "i" } },
-        { displayName: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
+        { firstName: pattern },
+        { lastName: pattern },
+        { displayName: pattern },
+        { email: pattern },
       ],
     }).select("_id");
     filter.$or = [
-      { to: { $regex: search, $options: "i" } },
-      { subject: { $regex: search, $options: "i" } },
+      { to: pattern },
+      { subject: pattern },
       { toUser: { $in: matchingUsers.map((u) => u._id) } },
     ];
   }
@@ -1497,11 +1514,15 @@ router.post("/broadcast", async (req, res) => {
 // GET /admin/broadcast/history — past + scheduled broadcasts, newest first
 router.get("/broadcast/history", async (req, res) => {
   try {
-    const broadcasts = await Broadcast.find()
-      .sort({ createdAt: -1 })
-      .limit(100)
-      .populate("sentBy", "displayName firstName lastName email");
-    res.json({ broadcasts });
+    const filter = req.query.status === "scheduled" ? { status: "scheduled" } : {};
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 100));
+    const [broadcasts, total] = await Promise.all([
+      Broadcast.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit)
+        .populate("sentBy", "displayName firstName lastName email"),
+      Broadcast.countDocuments(filter),
+    ]);
+    res.json({ broadcasts, total, page, pages: Math.ceil(total / limit) });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }

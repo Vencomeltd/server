@@ -112,8 +112,10 @@ router.get("/:hostId", async (req, res) => {
       host.slug = slug;
     }
 
-    // Count total listings
-    const totalListings = await Property.countDocuments({ host: host._id });
+    // Live listings only -- the same ones GET /properties?host= shows as
+    // cards on the profile. Counting drafts/unpublished ones made the
+    // number disagree with the cards.
+    const totalListings = await Property.countDocuments({ host: host._id, isActive: true });
 
     // Calculate average rating
     const properties = await Property.find({ host: host._id }).select("reviews");
