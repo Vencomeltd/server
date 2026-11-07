@@ -6,6 +6,7 @@ const Property = require("../models/Property");
 const auth = require("../middleware/auth");
 const router = express.Router();
 const updatePropertyRating = require("../utils/updatePropertyRating");
+const { publicHostPopulate } = require("../utils/hostName");
 
 // Reveals both sides of a booking's review pair once the counterpart has
 // been submitted too (blind reviews — neither side sees the other's rating
@@ -178,7 +179,7 @@ router.get("/about-me", auth, async (req, res) => {
       type: "host_to_guest",
       revealed: true,
     })
-      .populate("host", "firstName lastName displayName profileImage")
+      .populate(publicHostPopulate("firstName lastName displayName profileImage"))
       .populate("property", "title coverImage")
       .populate("booking", "checkIn checkOut")
       .sort({ createdAt: -1 });

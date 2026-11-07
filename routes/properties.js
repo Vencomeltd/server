@@ -19,6 +19,7 @@ const { getUnitOccupancy, isFullyBooked } = require("../utils/unitAvailability")
 const sendEmail = require("../utils/sendEmail");
 const { geocodeAddress } = require("../utils/geocode");
 const { client } = require("../utils/redisClient");
+const { publicHostPopulate, publicListing } = require("../utils/hostName");
 const geoip = require("geoip-lite");
 const { generateUniqueSlug, generateSlug } = require("../utils/slugify");
 
@@ -735,7 +736,9 @@ router.get("/", async (req, res) => {
     const cacheKey = `properties:page:${page}:limit:${limit}${hostId ? `:host:${hostId}` : ""}`;
     const cached = await client.get(cacheKey);
     if (cached) {
-      return res.json({ success: true, ...JSON.parse(cached), cached: true });
+      // Entries cached before hosts were made public still carry the flags.
+      const payload = JSON.parse(cached);
+      return res.json({ success: true, ...payload, properties: payload.properties?.map(publicListing), cached: true });
     }
 
     const filter = { isActive: true, ...(hostId && { host: hostId }) };
@@ -749,7 +752,7 @@ router.get("/", async (req, res) => {
       // 287 KB of them) and list views never show a calendar -- leave it out.
       Property.find(filter)
         .select("-blockedDates")
-        .populate("host", "firstName lastName displayName profileImage businessVerification.companyName accountFlag")
+        .populate(publicHostPopulate("firstName lastName displayName profileImage"))
         .populate("category", "name")
         .populate("categories", "name")
         .sort({ order: 1, createdAt: -1 })
@@ -801,7 +804,7 @@ router.get("/near-me", async (req, res) => {
 
     const properties = await Property.find({ isActive: true })
       .select("-blockedDates") // list view, see GET / above
-      .populate("host", "firstName lastName displayName profileImage businessVerification.companyName accountFlag")
+      .populate(publicHostPopulate("firstName lastName displayName profileImage"))
       .populate("category", "name")
       .populate("categories", "name")
       .limit(100);
@@ -921,7 +924,7 @@ router.get("/by-service-location", async (req, res) => {
       $or: [{ subcategory }, { subcategories: subcategory }],
       isActive: true,
     })
-      .populate("host", "firstName lastName displayName profileImage businessVerification.companyName accountFlag")
+      .populate(publicHostPopulate("firstName lastName displayName profileImage"))
       .populate("category", "name slug")
       .select("-__v");
 
@@ -965,7 +968,9 @@ router.get("/search", async (req, res) => {
   try {
     const cached = await client.get(cacheKey);
     if (cached) {
-      return res.json({ success: true, ...JSON.parse(cached), cached: true });
+      // Entries cached before hosts were made public still carry the flags.
+      const payload = JSON.parse(cached);
+      return res.json({ success: true, ...payload, properties: payload.properties?.map(publicListing), cached: true });
     }
 
     // Never returned unpublished listings -- unlike the other property
@@ -1081,7 +1086,7 @@ router.get("/search", async (req, res) => {
     }
 
     let properties = await Property.find(query)
-      .populate("host", "firstName lastName displayName profileImage businessVerification.companyName accountFlag")
+      .populate(publicHostPopulate("firstName lastName displayName profileImage"))
       .populate("category", "name")
       .populate("categories", "name")
       .sort({ createdAt: -1 });
@@ -1287,7 +1292,7 @@ router.get("/:id", async (req, res) => {
       if (cachedProperty.isActive) {
         return res.json({
           success: true,
-          property: cachedProperty,
+          property: publicListing(cachedProperty),
           cached: true,
         });
       }
@@ -1302,7 +1307,7 @@ router.get("/:id", async (req, res) => {
       : Property.findOne({ slug: propertyId });
 
     const property = await baseQuery
-      .populate("host", "firstName lastName displayName profileImage slug businessVerification.companyName accountFlag")
+      .populate(publicHostPopulate("firstName lastName displayName profileImage slug"))
       .populate("category", "name")
       .populate("categories", "name")
       .populate({
