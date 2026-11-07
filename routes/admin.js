@@ -896,9 +896,21 @@ router.get("/properties/counts", async (req, res) => {
 });
 
 router.get("/properties", async (req, res) => {
-  const { page = 1, limit = 20, q, moderationStatus, excludeTest, status } = req.query;
+  const { page = 1, limit = 20, q, moderationStatus, excludeTest, status, city, noPhotos, vatNotSet } = req.query;
   const filter = { ...(LISTING_STATUS[status] || {}) };
-  if (q) filter.title = { $regex: q, $options: "i" };
+  const conditions = [];
+  if (q) {
+    const pattern = { $regex: String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
+    const hosts = await User.find({ $or: ["firstName", "lastName", "displayName", "businessVerification.companyName"].map((key) => ({ [key]: pattern })) }).distinct("_id");
+    conditions.push({ $or: ["title", "location.city", "location.neighborhood", "location.address"].map((key) => ({ [key]: pattern })).concat({ host: { $in: hosts } }) });
+  }
+  if (city) filter["location.city"] = city;
+  if (noPhotos === "true") conditions.push({ "images.0": { $exists: false }, $or: [{ coverImage: { $exists: false } }, { coverImage: { $in: [null, ""] } }] });
+  if (vatNotSet === "true") {
+    const keys = { hourly: ["hourly", "hourlyPrice"], daily: ["daily", "weekdayPrice"], weekly: ["weekly"], monthly: ["monthly"] };
+    conditions.push({ $or: Object.entries(keys).map(([unit, fields]) => ({ $and: [{ $or: fields.map((key) => ({ [`pricing.${key}`]: { $gt: 0 } })) }, { [`pricing.vat.${unit}`]: null }] })) });
+  }
+  if (conditions.length) filter.$and = conditions;
   // Lets the moderation queue query platform-wide regardless of whatever
   // page the main "all listings" browser happens to be on, instead of the
   // queue being derived by filtering just the current page's 50 results.
@@ -908,14 +920,15 @@ router.get("/properties", async (req, res) => {
   // the "Total Listings" summary count asks for this explicitly.
   if (excludeTest === "true") filter.host = await testHostFilter();
   const skip = (parseInt(page) - 1) * parseInt(limit);
-  const [properties, total] = await Promise.all([
+  const [properties, total, locations] = await Promise.all([
     Property.find(filter)
       .populate("host", "firstName lastName email displayName businessVerification.companyName isTestAccount accountFlag")
       .populate("createdBy", "firstName lastName email displayName")
       .populate("category", "name").sort({ order: 1, createdAt: -1 }).skip(skip).limit(parseInt(limit)),
     Property.countDocuments(filter),
+    Property.distinct("location.city", excludeTest === "true" ? { host: filter.host } : {}),
   ]);
-  res.json({ properties, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
+  res.json({ properties, total, locations: locations.filter(Boolean).sort(), page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
 });
 
 // Lists saved-but-unpublished listing drafts across all hosts, oldest
