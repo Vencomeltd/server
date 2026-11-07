@@ -2,7 +2,7 @@
 //
 // Export: one zip with every collection as Extended JSON (types such as ids
 // and dates survive a round trip), CSVs of the key collections, and a
-// manifest. Password hashes, tokens, secrets and one-time codes are stripped
+// manifest. Password hashes, tokens, secrets, one-time codes and card or bank numbers are stripped
 // from everything, including logged email bodies (which carry login codes and
 // action links). A weekly copy goes to the Documents drive ("Backups"),
 // keeping the last 8.
@@ -19,7 +19,7 @@ const Document = require("../models/Document");
 const storage = require("./documentStorage");
 
 const { EJSON } = mongoose.mongo.BSON;
-const SENSITIVE_KEY = /password|token|secret|otp|apikey|api_key/i;
+const SENSITIVE_KEY = /password|token|secret|otp|apikey|api_key|cardnumber|accountnumber|routingnumber/i;
 const BACKUP_FOLDER = "Backups";
 const KEEP_BACKUPS = 8;
 

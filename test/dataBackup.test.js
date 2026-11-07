@@ -177,3 +177,16 @@ test("email bodies (one-time codes, action links) and iCal import URLs stay out 
   assert.equal(summary.emaillogs.same, 1); // a missing body never wipes the live one
   assert.equal(summary.properties.same, 1);
 });
+
+test("card and bank account numbers stay out of the export at any depth", () => {
+  const user = backup.strip({
+    email: "synthetic@example.test",
+    paymentMethods: [{ brand: "visa", last4: "4242", cardNumber: "4242424242424242" }],
+    payoutMethods: [{ bankAccount: { accountName: "Synthetic", accountNumber: "12345678", routingNumber: "000000" } }],
+  });
+  assert.equal(user.paymentMethods[0].cardNumber, undefined);
+  assert.equal(user.paymentMethods[0].last4, "4242");
+  assert.equal(user.payoutMethods[0].bankAccount.accountNumber, undefined);
+  assert.equal(user.payoutMethods[0].bankAccount.routingNumber, undefined);
+  assert.equal(user.payoutMethods[0].bankAccount.accountName, "Synthetic");
+});
