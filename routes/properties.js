@@ -35,6 +35,7 @@ const {
   roomPhotos,
   uniqueRoomSlug,
 } = require("../utils/buildingListings");
+const { MAX_IMPORT_ROWS, planRoomImport, summarise: summariseImport } = require("../utils/roomImport");
 const { listingName } = require("../utils/listingName");
 
 // minBookingHours from the listing editor: a whole number of hours, 0-24
@@ -1615,7 +1616,7 @@ const canManageListing = async (userId, property) => {
 };
 
 // The building a room is being added to, if the requester may add to it.
-async function loadBuildingForRoom(userId, buildingId) {
+async function loadBuildingForRoom(userId, buildingId, { enforceLimit = true } = {}) {
   if (!buildingId) return { status: 400, error: "parentBuilding is required for a room" };
   if (!isObjectId(buildingId)) return { status: 400, error: "Invalid property ID format" };
   const building = await Property.findById(buildingId);
@@ -1624,7 +1625,7 @@ async function loadBuildingForRoom(userId, buildingId) {
     return { status: 403, error: "Unauthorized: You are not the host of this property" };
   }
   if (building.listingType !== "building") return { status: 400, error: "Rooms can only be added to a building listing" };
-  const roomCount = await Property.countDocuments({ parentBuilding: building._id, listingType: "unit" });
+  const roomCount = enforceLimit ? await Property.countDocuments({ parentBuilding: building._id, listingType: "unit" }) : 0;
   if (roomCount >= MAX_UNITS_PER_BUILDING) {
     return { status: 400, error: `A building can have at most ${MAX_UNITS_PER_BUILDING} units` };
   }
@@ -1667,6 +1668,87 @@ router.post("/:buildingId/units", auth, listingUpload, jsonBodyAsForm, (req, res
   req.body.listingType = "unit";
   req.body.parentBuilding = req.params.buildingId;
   return createListingHandler(req, res);
+});
+
+// ✅ Import rooms from a spreadsheet (building owner or admin). The client maps
+// its CSV columns and sends rows: [{ room, pricePerMonth, vatStatus, ... }].
+// Creates only valid rows whose room name is not already a room of this
+// building (nor repeated in the file); it never updates an existing room, and
+// with dryRun: true it writes nothing. No emails, no bookings touched.
+router.post("/:buildingId/units/import", auth, async (req, res) => {
+  try {
+    const found = await loadBuildingForRoom(req.user.id, req.params.buildingId, { enforceLimit: false });
+    if (found.error) return res.status(found.status).json({ error: found.error });
+    const user = await User.findById(req.user.id);
+    if (!user?.isVerified) return res.status(403).json({ error: "You must verify your account before creating rooms" });
+
+    const { rows, dryRun } = req.body || {};
+    if (!Array.isArray(rows) || rows.length === 0) return res.status(400).json({ error: "rows must be a non-empty list" });
+    if (rows.length > MAX_IMPORT_ROWS) return res.status(400).json({ error: `At most ${MAX_IMPORT_ROWS} rows can be imported at once` });
+    if (typeof dryRun !== "boolean") return res.status(400).json({ error: "dryRun must be true or false" });
+
+    const building = found.building.toObject();
+    const existing = await Property.find({ parentBuilding: building._id, listingType: "unit" }).select("roomSlug").lean();
+    const plan = planRoomImport(rows, {
+      existingSlugs: new Set(existing.map((u) => u.roomSlug).filter(Boolean)),
+      capacity: MAX_UNITS_PER_BUILDING - existing.length,
+      applyVatSettings,
+      roomPricingError,
+    });
+
+    const results = [];
+    for (const { value, ...result } of plan) {
+      if (result.status === "create" && !dryRun) {
+        // One row failing to save must not stop the rest.
+        try {
+          await new Property({
+            parentBuilding: building._id,
+            parentBuildingTitle: building.title,
+            roomSlug: await uniqueRoomSlug(building._id, value.title),
+            unitDetails: value.unitDetails,
+            title: value.title,
+            slug: await generateUniqueSlug(Property, value.title),
+            description: value.description,
+            whatsIncluded: "",
+            location: building.location,
+            coordinates: building.coordinates,
+            images: [],
+            features: { houseRules: "" },
+            extras: [],
+            pricing: value.pricing,
+            // The room flow's defaults.
+            bookingSettings: { instantBook: false, approveAllBookings: true, refundPolicy: "moderate", singleDayOnly: false, bufferBefore: 0, bufferAfter: 0 },
+            host: building.host,
+            createdBy: req.user.impersonatedBy || req.user.id,
+            category: building.category || undefined,
+            subcategory: building.subcategory || "",
+            categories: building.categories || [],
+            subcategories: building.subcategories || [],
+            // A room is bookable on the building's opening days and hours.
+            availability: building.availability,
+            deposit: { enabled: false, amount: 0 },
+            timeBlocks: [],
+            unitsCount: 1,
+            blockedDates: [],
+            listingTerms: "",
+            listingType: "unit",
+            isActive: true,
+            moderationStatus: "approved",
+          }).save();
+          results.push({ ...result, status: "created" });
+        } catch (err) {
+          console.error("Room import: couldn't save a row:", err.message);
+          results.push({ ...result, status: "error", errors: ["Couldn't save this room, please try again"] });
+        }
+      } else {
+        results.push(result);
+      }
+    }
+    res.json({ success: true, dryRun, summary: summariseImport(results), results });
+  } catch (err) {
+    console.error("Error importing rooms:", err);
+    res.status(500).json({ error: "Server error", details: err.message });
+  }
 });
 
 // ✅ Edit a room (owner or admin): PUT /properties/:id for a unit; only the fields sent change
