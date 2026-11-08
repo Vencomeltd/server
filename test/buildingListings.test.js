@@ -760,3 +760,200 @@ test("fromPriceUnit falls back to week, day, then hour when no available room ha
   res = await call("GET", `/properties/${building._id}`);
   assert.deepEqual([res.body.property.fromPriceUnit, res.body.property.fromPricePence], ["hour", 500]);
 });
+
+// ── Room import from a spreadsheet ───────────────────────────────────────
+const importRow = (extra = {}) => ({ room: "Suite 1", pricePerMonth: 1000, vatStatus: "excludes", ...extra });
+const importUrl = (building) => `/properties/${building._id}/units/import`;
+const roomsOf = (building) => [...store.values()].filter((d) => d.listingType === "unit" && String(d.parentBuilding) === String(building._id));
+const OPEN = { openDays: ["Monday", "Tuesday"], openTime: "09:00", closeTime: "17:00" };
+
+test("import: a dry run reports what would happen and writes nothing", async () => {
+  const building = seed({ availability: OPEN });
+  seedUnit(building, { roomSlug: "suite-1" });
+  const before = store.size;
+  const { status, body } = await call("POST", importUrl(building), { user: HOST, body: { dryRun: true, rows: [importRow({ room: "Suite 1" }), importRow({ room: "Suite 2" }), importRow({ room: "Suite 3", pricePerMonth: 0 })] } });
+  assert.equal(status, 200);
+  assert.equal(body.dryRun, true);
+  assert.deepEqual(body.summary, { total: 3, create: 1, duplicate: 1, error: 1 });
+  assert.deepEqual(body.results.map((r) => [r.row, r.room, r.status]), [[1, "Suite 1", "duplicate"], [2, "Suite 2", "create"], [3, "Suite 3", "error"]]);
+  assert.equal(store.size, before);
+  assert.equal(emails.length, 0);
+});
+
+test("import: valid rows are created as full rooms on the building's hours, with VAT worked out by the server", async () => {
+  const building = seed({ availability: OPEN, category: new mongoose.Types.ObjectId(), subcategory: "Offices" });
+  const { status, body } = await call("POST", importUrl(building), { user: HOST, body: { dryRun: false, rows: [
+    importRow({ room: "Suite 2A", pricePerMonth: 1200, vatStatus: "includes", minTermMonths: 6, sizeSqFt: 450, capacity: 6, features: "Meeting room, Kitchen", description: "Corner suite" }),
+    importRow({ room: "Suite 2B", pricePerMonth: 800, vatStatus: "none", status: "available_from", availableFrom: "2027-03-01" }),
+    importRow({ room: "Suite 2C", pricePerMonth: 500, vatStatus: "excludes", vatRatePct: 0, status: "let", features: ["Lift access"] }),
+  ] } });
+  assert.equal(status, 200);
+  assert.equal(body.dryRun, false);
+  assert.deepEqual(body.summary, { total: 3, create: 3, duplicate: 0, error: 0 });
+  assert.deepEqual(body.results.map((r) => r.status), ["created", "created", "created"]);
+  const rooms = roomsOf(building);
+  assert.equal(rooms.length, 3);
+  const a = rooms.find((r) => r.title === "Suite 2A").toObject();
+  assert.equal(a.listingType, "unit");
+  assert.equal(a.isActive, true);
+  assert.equal(String(a.host), String(building.host));
+  assert.equal(a.description, "Corner suite");
+  assert.equal(a.roomSlug, "suite-2a");
+  assert.deepEqual(a.images, []);
+  assert.equal(a.pricing.vat.monthly.status, "includes");
+  assert.equal(a.pricing.vat.monthly.grossPence, 120000);
+  assert.equal(a.pricing.monthly, 1000); // core price ex VAT
+  assert.equal(a.pricing.minimumTermMonths, 6);
+  assert.deepEqual([a.unitDetails.label, a.unitDetails.sizeSqFt, a.unitDetails.capacity, a.unitDetails.features], ["Suite 2A", 450, 6, ["Meeting room", "Kitchen"]]);
+  assert.deepEqual([a.availability.openDays, a.availability.openTime, a.availability.closeTime], [OPEN.openDays, "09:00", "17:00"]);
+  assert.equal(String(a.category), String(building.category));
+  assert.equal(a.bookingSettings.approveAllBookings, true);
+  assert.equal(a.bookingSettings.instantBook, false);
+  const b = rooms.find((r) => r.title === "Suite 2B").toObject();
+  assert.equal(b.description, "Suite 2B"); // no description: the room name
+  assert.equal(b.pricing.monthly, 800);
+  assert.equal(b.unitDetails.availability.status, "available_from");
+  assert.equal(b.unitDetails.availability.availableFrom.toISOString().slice(0, 10), "2027-03-01");
+  const c = rooms.find((r) => r.title === "Suite 2C").toObject();
+  assert.equal(c.unitDetails.availability.status, "let");
+  assert.equal(c.pricing.vat.monthly.ratePct, 0);
+  assert.equal(emails.length, 0);
+  // the rooms are live on the building
+  const detail = await call("GET", `/properties/${building._id}`);
+  assert.equal(detail.body.property.units.length, 3);
+});
+
+test("import: every validation rule rejects the row and names the problem", async () => {
+  const building = seed();
+  const bad = {
+    "no room name": [{ room: "" }, /room name is required/],
+    "long room name": [{ room: "x".repeat(81) }, /room name must be text of at most 80/],
+    "no price": [{ pricePerMonth: undefined }, /pricePerMonth is required/],
+    "zero price": [{ pricePerMonth: 0 }, /pricePerMonth must be a positive number/],
+    "negative price": [{ pricePerMonth: -5 }, /pricePerMonth must be a positive number/],
+    "text price": [{ pricePerMonth: "lots" }, /pricePerMonth must be a positive number/],
+    "no vat status": [{ vatStatus: undefined }, /vatStatus is required/],
+    "bad vat status": [{ vatStatus: "maybe" }, /vatStatus is required/],
+    "bad vat rate": [{ vatRatePct: 150 }, /vatRatePct must be a number from 0 to 100/],
+    "term too short": [{ minTermMonths: 1 }, /minTermMonths must be a whole number from 2 to 36/],
+    "term too long": [{ minTermMonths: 37 }, /minTermMonths/],
+    "fractional term": [{ minTermMonths: 2.5 }, /minTermMonths/],
+    "bad size": [{ sizeSqFt: "big" }, /sizeSqFt must be a positive number/],
+    "negative size": [{ sizeSqFt: -1 }, /sizeSqFt/],
+    "fractional capacity": [{ capacity: 2.5 }, /capacity must be a positive whole number/],
+    "21 features": [{ features: Array.from({ length: 21 }, (_, i) => `f${i}`) }, /at most 20 items/],
+    "long feature": [{ features: ["x".repeat(61)] }, /at most 60 characters/],
+    "bad status": [{ status: "maybe" }, /status must be one of/],
+    "available_from without date": [{ status: "available_from" }, /availableFrom must be a date as YYYY-MM-DD/],
+    "available_from bad date": [{ status: "available_from", availableFrom: "2027-02-31" }, /availableFrom must be a date/],
+    "available_from wrong format": [{ status: "available_from", availableFrom: "01/03/2027" }, /availableFrom must be a date/],
+  };
+  const names = Object.keys(bad);
+  const rows = names.map((name, i) => importRow({ room: `Room ${i}`, ...bad[name][0] }));
+  const { status, body } = await call("POST", importUrl(building), { user: HOST, body: { dryRun: false, rows } });
+  assert.equal(status, 200);
+  assert.equal(body.summary.error, names.length);
+  assert.equal(body.summary.create, 0);
+  names.forEach((name, i) => {
+    assert.equal(body.results[i].status, "error", name);
+    assert.ok(body.results[i].errors.some((e) => bad[name][1].test(e)), `${name}: ${body.results[i].errors}`);
+  });
+  assert.equal(roomsOf(building).length, 0);
+  // a row with several problems lists them all
+  const several = await call("POST", importUrl(building), { user: HOST, body: { dryRun: true, rows: [importRow({ pricePerMonth: -1, status: "maybe", capacity: 0 })] } });
+  assert.equal(several.body.results[0].errors.length, 3);
+});
+
+test("import: a room that already exists is a duplicate and is never changed", async () => {
+  const building = seed();
+  const existing = seedUnit(building, { title: "Suite 1", roomSlug: "suite-1", pricing: { pricingType: "MONTHLY", monthly: 111 } });
+  const snapshot = JSON.stringify(existing.toObject());
+  const res = await call("POST", importUrl(building), { user: HOST, body: { dryRun: false, rows: [importRow({ room: "  SUITE 1 ", pricePerMonth: 9999 }), importRow({ room: "suite-1" })] } });
+  assert.deepEqual(res.body.summary, { total: 2, create: 0, duplicate: 2, error: 0 });
+  assert.match(res.body.results[0].reason, /already exists/);
+  assert.equal(JSON.stringify(store.get(String(existing._id)).toObject()), snapshot);
+  assert.equal(roomsOf(building).length, 1);
+});
+
+test("import: a room repeated within the file is created once; invalid rows do not claim a name", async () => {
+  const building = seed();
+  const { body } = await call("POST", importUrl(building), { user: HOST, body: { dryRun: false, rows: [
+    importRow({ room: "Suite 9", pricePerMonth: -1 }), // invalid: does not claim "suite-9"
+    importRow({ room: "Suite 9" }),
+    importRow({ room: "suite 9" }),
+    importRow({ room: "Suite   9!" }),
+  ] } });
+  assert.deepEqual(body.results.map((r) => r.status), ["error", "created", "duplicate", "duplicate"]);
+  assert.equal(body.results[2].reason, "Repeats row 2 in this file");
+  assert.equal(roomsOf(building).length, 1);
+});
+
+test("import: importing the same file again creates nothing", async () => {
+  const building = seed({ availability: OPEN });
+  const rows = [importRow({ room: "Suite 1" }), importRow({ room: "Suite 2" }), importRow({ room: "Bad", pricePerMonth: 0 })];
+  const first = await call("POST", importUrl(building), { user: HOST, body: { dryRun: false, rows } });
+  assert.deepEqual(first.body.summary, { total: 3, create: 2, duplicate: 0, error: 1 });
+  const count = store.size;
+  const again = await call("POST", importUrl(building), { user: HOST, body: { dryRun: false, rows } });
+  assert.deepEqual(again.body.summary, { total: 3, create: 0, duplicate: 2, error: 1 });
+  assert.equal(store.size, count);
+});
+
+test("import: at most 200 rows, and rows and dryRun are required", async () => {
+  const building = seed();
+  const rows = Array.from({ length: 201 }, (_, i) => importRow({ room: `Room ${i}` }));
+  const tooMany = await call("POST", importUrl(building), { user: HOST, body: { dryRun: true, rows } });
+  assert.equal(tooMany.status, 400);
+  assert.match(tooMany.body.error, /200/);
+  const exactly = await call("POST", importUrl(building), { user: HOST, body: { dryRun: true, rows: rows.slice(0, 200) } });
+  assert.equal(exactly.status, 200);
+  assert.equal(exactly.body.summary.total, 200);
+  assert.equal(exactly.body.summary.create, 100); // a building holds 100 rooms; the rest are reported
+  assert.equal(exactly.body.summary.error, 100);
+  assert.equal((await call("POST", importUrl(building), { user: HOST, body: { dryRun: true, rows: [] } })).status, 400);
+  assert.equal((await call("POST", importUrl(building), { user: HOST, body: { dryRun: true } })).status, 400);
+  assert.equal((await call("POST", importUrl(building), { user: HOST, body: { rows: [importRow()] } })).status, 400); // never write by accident
+  assert.equal((await call("POST", importUrl(building), { user: HOST, body: { dryRun: "false", rows: [importRow()] } })).status, 400);
+  assert.equal(store.size, 1);
+});
+
+test("import: a building never goes over 100 rooms", async () => {
+  const building = seed();
+  for (let i = 0; i < 99; i++) seedUnit(building, { roomSlug: `seed-${i}` });
+  const { body } = await call("POST", importUrl(building), { user: HOST, body: { dryRun: false, rows: [importRow({ room: "One" }), importRow({ room: "Two" })] } });
+  assert.deepEqual(body.results.map((r) => r.status), ["created", "error"]);
+  assert.match(body.results[1].errors[0], /maximum/);
+  assert.equal(roomsOf(building).length, 100);
+});
+
+test("import: only the building's owner or an admin, and only into a building", async () => {
+  const building = seed();
+  const body = { dryRun: false, rows: [importRow()] };
+  assert.equal((await call("POST", importUrl(building), { user: OTHER_HOST, body })).status, 403);
+  assert.equal((await call("POST", importUrl(building), { user: GUEST, body })).status, 403);
+  assert.equal((await call("POST", importUrl(building), { body })).status, 403);
+  assert.equal(roomsOf(building).length, 0);
+  assert.equal((await call("POST", importUrl(building), { user: ADMIN, body })).status, 200);
+  assert.equal(roomsOf(building).length, 1);
+  const single = seed({ listingType: "single" });
+  assert.equal((await call("POST", importUrl(single), { user: HOST, body })).status, 400);
+  assert.equal((await call("POST", `/properties/${id()}/units/import`, { user: HOST, body })).status, 404);
+});
+
+test("import: one row failing to save does not stop the others", async () => {
+  const building = seed();
+  const realSave = Property.prototype.save;
+  Property.prototype.save = async function save() {
+    if (this.title === "Boom") throw new Error("synthetic save failure");
+    return realSave.call(this);
+  };
+  try {
+    const { status, body } = await call("POST", importUrl(building), { user: HOST, body: { dryRun: false, rows: [importRow({ room: "Fine 1" }), importRow({ room: "Boom" }), importRow({ room: "Fine 2" })] } });
+    assert.equal(status, 200);
+    assert.deepEqual(body.results.map((r) => r.status), ["created", "error", "created"]);
+    assert.deepEqual(body.summary, { total: 3, create: 2, duplicate: 0, error: 1 });
+    assert.equal(roomsOf(building).length, 2);
+  } finally {
+    Property.prototype.save = realSave;
+  }
+});

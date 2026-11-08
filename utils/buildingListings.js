@@ -187,6 +187,7 @@ module.exports = {
   attachBuildingStats,
   buildingUnitsDetail,
   cleanUnitDetails,
+  cleanPositiveNumber,
   roomPath,
   roomPhotos,
   publicListingFilter,
