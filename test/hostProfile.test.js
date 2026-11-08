@@ -12,8 +12,9 @@ const listings = [
   { _id: 'synthetic-live', host: hostId, isActive: true, reviews: [] },
   { _id: 'synthetic-unpublished', host: hostId, isActive: false, reviews: [] },
   { _id: 'synthetic-pending', host: hostId, isActive: false, moderationStatus: 'pending_review', reviews: [] },
+  { _id: 'synthetic-unit', host: hostId, isActive: true, listingType: 'unit', reviews: [] },
 ];
-const matches = (doc, filter) => Object.entries(filter).every(([key, want]) => String(doc[key]) === String(want));
+const matches = (doc, filter) => Object.entries(filter).every(([key, want]) => (want && typeof want === 'object' ? String(doc[key]) !== String(want.$ne) : String(doc[key]) === String(want)));
 const host = { _id: hostId, firstName: 'Synthetic', slug: 'synthetic-host', toObject() { const { toObject, ...rest } = this; return rest; } };
 User.findById = () => ({ select: async () => host });
 Property.countDocuments = async (filter) => listings.filter(doc => matches(doc, filter)).length;
@@ -28,6 +29,6 @@ test('public host profile counts only the live listings it can show', async () =
   const res = await fetch(`http://127.0.0.1:${server.address().port}/hosts/${hostId}`);
   const body = await res.json();
   assert.equal(res.status, 200);
-  // GET /properties?host= (the cards on the page) lists isActive listings only.
-  assert.equal(body.totalListings, listings.filter(doc => doc.isActive).length);
+  // GET /properties?host= (the cards on the page) lists isActive listings only, never a building's units.
+  assert.equal(body.totalListings, listings.filter(doc => doc.isActive && doc.listingType !== 'unit').length);
 });

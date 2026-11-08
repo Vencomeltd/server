@@ -15,10 +15,13 @@ const stub = (id, exports) => {
   require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports };
 };
 // Auth: the caller is named by the x-user header.
-stub("../middleware/auth", (req, _res, next) => {
+const auth = (req, _res, next) => {
   req.user = { id: req.header("x-user") };
   next();
-});
+};
+auth.blockDuringImpersonation = (_req, _res, next) => next();
+stub("../middleware/auth", auth);
+stub("../utils/commission", { resolveCommissionRate: async () => 0.1 });
 const emails = [];
 stub("../utils/sendEmail", async (mail) => { emails.push(mail); });
 stub("../utils/stripeConnect", async () => {});
@@ -79,6 +82,13 @@ Property.aggregate = async (pipeline) => { pipelines.push(pipeline); return []; 
 Property.deleteMany = async (filter) => { for (const doc of plainDocs(filter)) store.delete(String(doc._id)); };
 Property.prototype.save = async function save() { await this.validate(); store.set(String(this._id), this); return this; };
 Property.prototype.deleteOne = async function deleteOne() { store.delete(String(this._id)); };
+const Booking = require("../models/Booking");
+const bookingsSaved = [];
+Booking.find = () => query(() => []);
+Booking.updateMany = async () => {};
+Booking.prototype.save = async function save() { bookingsSaved.push(this); return this; };
+Booking.prototype.populate = async function populate() { return this; };
+require("../models/PlatformSettings").getSettings = async () => ({ commissionBase: "core" });
 User.findById = (userId) => query(() => users.get(String(userId)) || null);
 
 const sent = [];
@@ -108,6 +118,7 @@ const app = express();
 app.use(express.json());
 app.use("/properties", require("../routes/properties"));
 app.use("/messages", require("../routes/messages"));
+app.use("/bookings", require("../routes/bookings"));
 const server = app.listen(0, "127.0.0.1");
 const ready = new Promise((resolve) => server.on("listening", resolve));
 test.after(() => server.close());
@@ -377,4 +388,52 @@ test("an enquiry about a unit of a different building is refused; ordinary enqui
   const plain = await call("POST", "/messages/enquiry", { user: GUEST, body: { propertyId: String(building._id), checkIn: "2027-01-01", checkOut: "2027-01-05", guests: 2, durationType: "daily", totalPrice: 100, message: "hello" } });
   assert.equal(plain.status, 200);
   assert.ok(sent[0].text.startsWith("📅 Booking Enquiry"));
+});
+
+// ── Enquiry-only ─────────────────────────────────────────────────────────
+test("buildings and units cannot be booked, singles still reach the booking checks", async () => {
+  const building = seed();
+  const unit = seedUnit(building);
+  const single = seed({ listingType: "single", title: "Plain", pricing: { pricingType: "DAILY", daily: 50 } });
+  const booking = (property) => call("POST", "/bookings", { user: GUEST, body: { propertyId: String(property._id), checkIn: "2027-02-01", checkOut: "2027-02-03", guests: 1, pricingUnit: "day", extras: "[]" } });
+  for (const blocked of [building, unit]) {
+    const res = await booking(blocked);
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /enquiry-only/);
+  }
+  assert.equal(bookingsSaved.length, 0);
+  const res = await booking(single);
+  assert.doesNotMatch(String(res.body?.error), /enquiry-only/);
+  assert.equal(bookingsSaved.length, 1); // synthetic, in memory only
+});
+
+// ── Other public lists ───────────────────────────────────────────────────
+test("category pages, category counts and the landing index leave units out", async () => {
+  const Category = require("../models/Category");
+  const category = new Category({ name: "Offices", slug: "offices" });
+  Category.findById = async () => category;
+  Category.findOne = async () => category;
+  Category.find = () => query(() => [category]);
+  const LandingPage = require("../models/LandingPage");
+  LandingPage.find = () => query(() => []);
+  app.use("/categories", require("../routes/categories"));
+
+  const building = seed({ category: category._id, subcategory: "Offices" });
+  const unit = seedUnit(building, { category: category._id });
+  seed({ listingType: "single", title: "Plain", category: category._id });
+
+  const page = await call("GET", `/categories/${category._id}`);
+  assert.equal(page.body.properties.length, 2);
+  assert.ok(!page.body.properties.some((p) => p._id === String(unit._id)));
+  assert.equal(page.body.properties.find((p) => p._id === String(building._id)).unitsAvailable, 1);
+
+  const counts = await call("GET", "/categories/with-counts");
+  assert.equal(counts.body.find((c) => c._id === String(category._id)).listingCount, 2);
+
+  const { loadLandingIndex } = require("../utils/landing");
+  const seen = [];
+  const find = Property.find;
+  Property.find = (filter) => { seen.push(filter); return find(filter); };
+  try { await loadLandingIndex(); } finally { Property.find = find; }
+  assert.deepEqual(seen[0].listingType, { $ne: "unit" });
 });

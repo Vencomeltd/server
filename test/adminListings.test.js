@@ -114,3 +114,25 @@ test('listing search matches the host email', async () => {
     assert.equal(body.properties[0]._id, 'synthetic-email-listing');
   } finally { listings.pop(); }
 });
+
+
+test('a building is one listing: units are left out of counts and lists unless asked for by parentBuilding', async () => {
+  listings.push(
+    { _id: 'synthetic-building', title: 'Synthetic building', host: 'synthetic-host', isActive: true, listingType: 'building' },
+    { _id: 'synthetic-unit-a', title: 'Unit A', host: 'synthetic-host', isActive: true, listingType: 'unit', parentBuilding: 'synthetic-building' },
+    { _id: 'synthetic-unit-b', title: 'Unit B', host: 'synthetic-host', isActive: false, moderationStatus: 'approved', listingType: 'unit', parentBuilding: 'synthetic-building' },
+  );
+  try {
+    const { body: counts } = await get('/properties/counts');
+    assert.deepEqual(counts, { all: 5, active: 3, inactive: 1, pending: 1, draft: 1 });
+    const { body: all } = await get('/properties');
+    assert.equal(all.total, 5);
+    assert.ok(all.properties.every(doc => doc.listingType !== 'unit'));
+    assert.equal(all.properties.find(doc => doc._id === 'synthetic-building').listingType, 'building');
+    const { body: active } = await get('/properties?status=active');
+    assert.equal(active.total, 3);
+    const { body: units } = await get('/properties?parentBuilding=synthetic-building');
+    assert.deepEqual(units.properties.map(doc => doc._id), ['synthetic-unit-a', 'synthetic-unit-b']);
+    assert.equal(units.total, 2);
+  } finally { listings.splice(listings.length - 3); }
+});

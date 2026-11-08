@@ -27,6 +27,8 @@ const listings = [
   { _id: "croydon", isActive: true, coordinates: { latitude: 51.37, longitude: -0.1 } },
   { _id: "no-coords", isActive: true, coordinates: {} },
   { _id: "inactive-closest", isActive: false, coordinates: { latitude: 51.5074, longitude: -0.1278 } },
+  // A unit of a building is never a card of its own, however close it is.
+  { _id: "unit-closest", isActive: true, listingType: "unit", coordinates: { latitude: 51.5074, longitude: -0.1278 } },
 ];
 
 const get = (doc, path) => path.split(".").reduce((v, k) => (v == null ? undefined : v[k]), doc);
@@ -61,7 +63,7 @@ Property.aggregate = async (pipeline) => {
   let docs = listings;
   for (const stage of pipeline) {
     const [name, spec] = Object.entries(stage)[0];
-    if (name === "$match") docs = docs.filter((d) => Object.entries(spec).every(([k, v]) => get(d, k) === v));
+    if (name === "$match") docs = docs.filter((d) => Object.entries(spec).every(([k, v]) => (v && typeof v === "object" ? get(d, k) !== v.$ne : get(d, k) === v)));
     else if (name === "$project") docs = docs.map((d) => ({ _id: d._id, ...Object.fromEntries(Object.entries(spec).map(([k, e]) => [k, evaluate(e, d)])) }));
     else if (name === "$addFields") docs = docs.map((d) => ({ ...d, ...Object.fromEntries(Object.entries(spec).map(([k, e]) => [k, evaluate(e, d)])) }));
     else if (name === "$sort") docs = [...docs].sort((a, b) => {
@@ -114,6 +116,7 @@ test("nearby listings beyond the first 100 come first, sorted by distance", asyn
   assert.equal(body.properties.length, 100);
   assert.deepEqual(body.properties.slice(0, 2).map((p) => p._id), ["london-near", "croydon"]);
   assert.ok(!body.properties.some((p) => p._id === "inactive-closest"));
+  assert.ok(!body.properties.some((p) => p._id === "unit-closest"));
   assert.equal(body.properties[0].title, "Listing london-near"); // full list-view listing, same shape as before
 });
 
@@ -131,7 +134,7 @@ test("the database does the sorting and limiting", async () => {
   await nearMe();
   const stages = pipelines[0].map((s) => Object.keys(s)[0]);
   assert.deepEqual(stages.slice(-2), ["$sort", "$limit"]);
-  assert.deepEqual(pipelines[0][0], { $match: { isActive: true } });
+  assert.deepEqual(pipelines[0][0], { $match: { isActive: true, listingType: { $ne: "unit" } } });
 });
 
 test("falls back to an unsorted list when the visitor can't be located", async () => {
