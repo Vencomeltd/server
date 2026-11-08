@@ -56,7 +56,7 @@ Do not edit any file. Report the following, with file paths and line numbers.
 6. Whether Stripe Customers are created for users, and whether payment methods are saved.
 7. Every scheduled job in the server, with schedule and purpose.
 8. Every handled Stripe webhook event, with file and handler name.
-9. The cancellation refund logic, and which tier version is in code. Report only. (Now: 100% at 48h or more, 75% at 24h to under 48h, 0% under 24h.)
+9. The cancellation refund logic, and which tier version is in code. Report only. (Now, per the client's T&C 1.5.2: 100% at 48h or more, 75% over 24h to under 48h, 50% over 23h up to 24h, 0% at 23h or less.)
 10. Where vencome-server is hosted, and whether a long-running process is available for scheduled jobs.
 11. The host portal listing form and the API route that saves listing settings.
 

@@ -109,13 +109,16 @@ test("no deposit policy -> not required", () => {
   assert.equal(planDeposit({ ...base, policy: { mode: "card_hold", amountPence: 0 } }).status, "not_required");
 });
 
-test("cancellation tiers come from config: >=48h 100%, 24-<48h 75%, <24h 0%", () => {
+test("cancellation tiers follow the client's T&C 1.5.2: >=48h 100%, >24h<48h 75%, >23h<=24h 50%, <=23h 0%", () => {
   const pct = (h) => getRefundTier(h).refundPercent;
   assert.equal(pct(72), 100);
-  assert.equal(pct(48), 100); // exactly 48h is full refund
+  assert.equal(pct(48), 100); // exactly 48h is a full refund
   assert.equal(pct(47.9), 75);
-  assert.equal(pct(24), 75); // exactly 24h is 75%
-  assert.equal(pct(23.9), 0);
+  assert.equal(pct(24.01), 75);
+  assert.equal(pct(24), 50); // exactly 24h is 50%
+  assert.equal(pct(23.5), 50);
+  assert.equal(pct(23.01), 50);
+  assert.equal(pct(23), 0); // exactly 23h is 0%
   assert.equal(pct(1), 0);
   assert.equal(pct(0), 0);
   assert.equal(pct(-5), 0); // past check-in
