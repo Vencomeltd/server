@@ -120,6 +120,11 @@ const uploadPdf = multer({
   },
 });
 
+// Building listings and their units are enquiry-only: guests message the
+// host instead (POST /messages/enquiry), nothing is booked or paid here.
+const ENQUIRY_ONLY_TYPES = ["building", "unit"];
+const ENQUIRY_ONLY_ERROR = "This listing is enquiry-only. Please send the host a message instead.";
+
 // Validates, prices and saves one booking. Returns { status, body }: body is
 // the saved booking on success, or { error }. POST / and POST /group share
 // it, so a series gets exactly the same checks and pricing as one booking.
@@ -149,6 +154,9 @@ async function createBooking({
     return res
       .status(404)
       .json({ error: "Property not found or unavailable" });
+  }
+  if (ENQUIRY_ONLY_TYPES.includes(property.listingType)) {
+    return res.status(400).json({ error: ENQUIRY_ONLY_ERROR });
   }
 
   // 2. Parse and validate dates
@@ -616,6 +624,10 @@ router.post(
       return res
         .status(404)
         .json({ error: "Property not found or unavailable" });
+    }
+    if (ENQUIRY_ONLY_TYPES.includes(property.listingType)) {
+      if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: ENQUIRY_ONLY_ERROR });
     }
 
     // If the host has set listing-specific terms, the customer must have

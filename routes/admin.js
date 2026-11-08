@@ -14,6 +14,7 @@ const ProspectEmail = require("../models/ProspectEmail");
 const Report = require("../models/Report");
 const SupportTicket = require("../models/SupportTicket");
 const { geocodeAddress } = require("../utils/geocode");
+const { NOT_UNIT } = require("../utils/buildingListings");
 const Payment = require("../models/Payment");
 const Payout = require("../models/Payout");
 const Review = require("../models/Review");
@@ -180,7 +181,7 @@ router.get("/stats", async (req, res) => {
 
     const [users, properties, bookings, reports, pendingVerifications, escrowPending, activeUsers, pendingListings] = await Promise.all([
       User.countDocuments({ isTestAccount: { $ne: true } }),
-      Property.countDocuments({ isActive: true, host: notTestUser }),
+      Property.countDocuments({ isActive: true, ...NOT_UNIT, host: notTestUser }),
       Booking.countDocuments({ guest: notTestUser, host: notTestUser }),
       Report.countDocuments({ status: "open" }),
       User.countDocuments({ "businessVerification.status": "under_review", isTestAccount: { $ne: true } }),
@@ -190,7 +191,7 @@ router.get("/stats", async (req, res) => {
       // on the currently-fetched page, silently under-reporting once there
       // was more than one page of either).
       User.countDocuments({ isBanned: { $ne: true }, isTestAccount: { $ne: true } }),
-      Property.countDocuments({ isActive: false, host: notTestUser }),
+      Property.countDocuments({ isActive: false, ...NOT_UNIT, host: notTestUser }),
     ]);
     const totalEscrow = escrowPending.reduce((s, b) => s + b.hostAmount, 0);
     res.json({
@@ -348,7 +349,7 @@ router.get("/users/:id/detail", async (req, res) => {
 
     const [listings, bookingsAsGuest, bookingsAsHost] = await Promise.all([
       user.isHost
-        ? Property.find({ host: user._id })
+        ? Property.find({ host: user._id, ...NOT_UNIT })
             .select("title isActive images createdAt")
             .sort({ createdAt: -1 })
         : Promise.resolve([]),
@@ -876,6 +877,8 @@ const LISTING_STATUS = {
   inactive: { isActive: { $ne: true }, moderationStatus: { $ne: "pending_review" } },
   pending: { isActive: { $ne: true }, moderationStatus: "pending_review" },
 };
+// A building is one listing: its units are not counted or listed here (they
+// are opened with GET /properties?parentBuilding=<building id>).
 const testHostFilter = async () => ({ $nin: await User.find({ isTestAccount: true }).distinct("_id") });
 
 // GET /properties/counts?excludeTest=true -- each status tab's total. "active"
@@ -884,8 +887,8 @@ router.get("/properties/counts", async (req, res) => {
   try {
     const hostFilter = req.query.excludeTest === "true" ? { host: await testHostFilter() } : {};
     const [all, active, inactive, pending, draft] = await Promise.all([
-      Property.countDocuments(hostFilter),
-      ...["active", "inactive", "pending"].map((status) => Property.countDocuments({ ...LISTING_STATUS[status], ...hostFilter })),
+      Property.countDocuments({ ...NOT_UNIT, ...hostFilter }),
+      ...["active", "inactive", "pending"].map((status) => Property.countDocuments({ ...LISTING_STATUS[status], ...NOT_UNIT, ...hostFilter })),
       Draft.countDocuments(hostFilter),
     ]);
     res.json({ all, active, inactive, pending, draft });
@@ -896,8 +899,8 @@ router.get("/properties/counts", async (req, res) => {
 });
 
 router.get("/properties", async (req, res) => {
-  const { page = 1, limit = 20, q, moderationStatus, excludeTest, status, city, noPhotos, vatNotSet } = req.query;
-  const filter = { ...(LISTING_STATUS[status] || {}) };
+  const { page = 1, limit = 20, q, moderationStatus, excludeTest, status, city, noPhotos, vatNotSet, parentBuilding } = req.query;
+  const filter = { ...(LISTING_STATUS[status] || {}), ...(parentBuilding ? { parentBuilding: String(parentBuilding) } : NOT_UNIT) };
   const conditions = [];
   if (q) {
     const pattern = { $regex: String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };

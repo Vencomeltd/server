@@ -3,6 +3,7 @@ const User = require("../models/User");
 const Property = require("../models/Property");
 const auth = require("../middleware/auth");
 const { generateUniqueSlug } = require("../utils/slugify");
+const { NOT_UNIT } = require("../utils/buildingListings");
 const { publicHost, HOST_NAME_FIELDS } = require("../utils/hostName");
 const router = express.Router();
 
@@ -116,7 +117,7 @@ router.get("/:hostId", async (req, res) => {
     // Live listings only -- the same ones GET /properties?host= shows as
     // cards on the profile. Counting drafts/unpublished ones made the
     // number disagree with the cards.
-    const totalListings = await Property.countDocuments({ host: host._id, isActive: true });
+    const totalListings = await Property.countDocuments({ host: host._id, isActive: true, ...NOT_UNIT });
 
     // Calculate average rating
     const properties = await Property.find({ host: host._id }).select("reviews");

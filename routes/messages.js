@@ -1,4 +1,5 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const Message = require("../models/Message");
 const Conversation = require("../models/Conversation");
 const Property = require("../models/Property");
@@ -179,7 +180,7 @@ router.get("/booking/:bookingId", auth, async (req, res) => {
 // POST: Create enquiry conversation with booking details
 router.post("/enquiry", auth, async (req, res) => {
   try {
-    const { propertyId, checkIn, checkOut, guests, durationType, totalPrice, message } = req.body;
+    const { propertyId, unitId, checkIn, checkOut, guests, durationType, totalPrice, message } = req.body;
     const guestId = req.user.id;
 
     if (message && containsBlockedContent(message)) {
@@ -190,6 +191,16 @@ router.post("/enquiry", auth, async (req, res) => {
 
     const property = await Property.findById(propertyId).populate(publicHostPopulate("firstName lastName displayName profileImage name email"));
     if (!property) return res.status(404).json({ error: "Property not found" });
+
+    // An enquiry about one unit of a building (building listings are
+    // enquiry-only): the unit must belong to this building.
+    let unit = null;
+    if (unitId) {
+      unit = mongoose.isValidObjectId(unitId)
+        ? await Property.findOne({ _id: unitId, parentBuilding: property._id, listingType: "unit" }).select("title unitDetails.label")
+        : null;
+      if (!unit) return res.status(400).json({ error: "Unit not found for this building" });
+    }
 
     // Find existing conversation or create new one
     let conversation = await Conversation.findOne({
@@ -210,7 +221,12 @@ router.post("/enquiry", auth, async (req, res) => {
     }
 
     // Create the enquiry message
-    const enquiryText = `📅 Booking Enquiry\n\nDates: ${new Date(checkIn).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })} → ${new Date(checkOut).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}\nDuration: ${durationType}\nGuests: ${guests}\nTotal: £${totalPrice}${message ? `\n\nMessage: ${message}` : ""}`;
+    const bookingText = `📅 Booking Enquiry\n\nDates: ${new Date(checkIn).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })} → ${new Date(checkOut).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}\nDuration: ${durationType}\nGuests: ${guests}\nTotal: £${totalPrice}${message ? `\n\nMessage: ${message}` : ""}`;
+    // A unit enquiry says which unit it is about; with no dates it is just
+    // the guest's own words.
+    const enquiryText = unit
+      ? `Enquiry about ${unit.unitDetails?.label || unit.title}:${checkIn && checkOut ? `\n\n${bookingText}` : `${guests ? `\n\nGuests: ${guests}` : ""}${message ? `\n\n${message}` : ""}`}`
+      : bookingText;
 
     const msg = new Message({
       conversation: conversation._id,
