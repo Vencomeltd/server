@@ -6,7 +6,7 @@ const { hostPublicName } = require("./hostName");
 const COMPANY = {
   name: "Vencome Ltd",
   number: "17182804",
-  address: "Flat 4, Spring House\nKingston Road\nLondon, SW19 3NJ\nEngland",
+  address: "Kingston Road\nLondon, SW19 3NJ\nEngland",
   email: "support@vencome.com",
 };
 
