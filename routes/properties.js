@@ -8,6 +8,7 @@ const Property = require("../models/Property");
 const { normaliseDepositPolicy } = require("../utils/paymentsV2/amounts");
 const Category = require("../models/Category");
 const auth = require("../middleware/auth");
+const actAsHost = require("../middleware/actAsHost");
 const uploadToR2 = require("../utils/uploadService");
 const { deleteFromR2 } = require("../utils/uploadService");
 const validatePricing = require("../middleware/validatePricing");
@@ -727,8 +728,9 @@ const createListingHandler = async (req, res) => {
         return res.status(201).json({ success: true, message: "Room created successfully", property: room, unit: room });
       }
 
-      // Notify admins of new listing
-      try {
+      // Notify admins of new listing (not when an admin just published it
+      // for the host themselves -- they already know).
+      if (!req.user.actingForHost) try {
         const sendEmail = require("../utils/sendEmail");
         const host = await User.findById(req.user.id).select("firstName lastName displayName email").lean();
         const hostName = host?.displayName || host?.firstName || "A host";
@@ -836,7 +838,7 @@ const createListingHandler = async (req, res) => {
       res.status(500).json({ error: "Server error", details: err.message });
     }
 };
-router.post("/", auth, validatePricing, listingUpload, createListingHandler);
+router.post("/", auth, actAsHost, validatePricing, listingUpload, createListingHandler);
 
 // ✅ Get all properties (paginated)
 router.get("/", async (req, res) => {

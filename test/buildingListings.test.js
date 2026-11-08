@@ -130,13 +130,14 @@ const ready = new Promise((resolve) => server.on("listening", resolve));
 test.after(() => server.close());
 test.beforeEach(() => { pipelines = []; bookingsSaved.length = 0; store.clear(); cache.clear(); emails.length = 0; sent.length = 0; });
 
-const call = async (method, path, { user, body, token } = {}) => {
+const call = async (method, path, { user, body, token, actAs } = {}) => {
   await ready;
   const res = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
     method,
     headers: {
       "Content-Type": "application/json",
       ...(user && { "x-user": user }),
+      ...(actAs && { "x-act-as-host": actAs }),
       // the public GET /:id reads a JWT itself, so it never sees x-user
       ...(token && { Authorization: `Bearer ${jwt.sign({ id: token }, process.env.JWT_SECRET)}` }),
     },
@@ -181,6 +182,25 @@ test("a building still needs a photo; a single listing still needs pricing; a ro
   const unit = await call("POST", "/properties", { user: HOST, body: buildingForm({ listingType: "unit" }) });
   assert.equal(unit.status, 400);
   assert.equal(store.size, 0);
+});
+
+test("an admin publishing for a host: the listing is the host's, the admin is the creator, and no admin alert is sent", async () => {
+  const forHost = await call("POST", "/properties", { user: ADMIN, actAs: HOST, body: buildingForm() });
+  assert.equal(forHost.status, 201);
+  const [doc] = [...store.values()];
+  assert.equal(String(doc.host), HOST);
+  assert.equal(String(doc.createdBy), ADMIN);
+  assert.ok(!emails.some((mail) => /New Space Listed/.test(mail.subject)), "admin alert is skipped");
+
+  // A host cannot publish as another host, and a host publishing for themselves still alerts admins.
+  store.clear(); emails.length = 0;
+  const forged = await call("POST", "/properties", { user: HOST, actAs: OTHER_HOST, body: buildingForm() });
+  assert.equal(forged.status, 403);
+  assert.equal(store.size, 0);
+  const own = await call("POST", "/properties", { user: HOST, body: buildingForm() });
+  assert.equal(own.status, 201);
+  assert.equal(String([...store.values()][0].host), HOST);
+  assert.ok(emails.some((mail) => /New Space Listed/.test(mail.subject)), "normal publish still alerts admins");
 });
 
 // ── Units: create, edit, delete ──────────────────────────────────────────
