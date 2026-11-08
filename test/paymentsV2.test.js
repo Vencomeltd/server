@@ -109,13 +109,31 @@ test("no deposit policy -> not required", () => {
   assert.equal(planDeposit({ ...base, policy: { mode: "card_hold", amountPence: 0 } }).status, "not_required");
 });
 
-test("cancellation tiers come from config: >48h 100%, 24-48h 75%, <24h 50%", () => {
-  assert.equal(getRefundTier(72).refundPercent, 100);
-  assert.equal(getRefundTier(48.01).refundPercent, 100);
-  assert.equal(getRefundTier(48).refundPercent, 75);
-  assert.equal(getRefundTier(24).refundPercent, 75);
-  assert.equal(getRefundTier(23.9).refundPercent, 50);
-  assert.equal(getRefundTier(-5).refundPercent, 50);
+test("cancellation tiers come from config: >=48h 100%, 24-<48h 75%, <24h 0%", () => {
+  const pct = (h) => getRefundTier(h).refundPercent;
+  assert.equal(pct(72), 100);
+  assert.equal(pct(48), 100); // exactly 48h is full refund
+  assert.equal(pct(47.9), 75);
+  assert.equal(pct(24), 75); // exactly 24h is 75%
+  assert.equal(pct(23.9), 0);
+  assert.equal(pct(1), 0);
+  assert.equal(pct(0), 0);
+  assert.equal(pct(-5), 0); // past check-in
+});
+
+test("0% cancellation: no Stripe refund, but payment is marked so the host's retained share is paid", async () => {
+  const { refundBookingPayment } = require("../utils/paymentsV2/cancel");
+  let saved = 0;
+  const booking = {
+    _id: "synthetic-test-booking",
+    payment: { chargeId: "ch_test", paymentIntentId: "pi_test", amountPence: 10000, hostAmountPence: 9000, status: "paid" },
+    save: async () => { saved++; },
+  };
+  const out = await refundBookingPayment(booking, 0, "test");
+  assert.equal(out.refundPence, 0);
+  assert.equal(out.stripeRefund, null);
+  assert.equal(booking.payment.status, "partially_refunded");
+  assert.equal(saved, 1);
 });
 
 test("cancellation: host keeps the non-refunded share of their amount", () => {

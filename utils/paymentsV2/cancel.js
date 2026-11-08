@@ -12,7 +12,15 @@ const { cancelDeposit } = require("./depositHold");
 // out of pocket. Returns { stripeRefund, refundPence }.
 async function refundBookingPayment(booking, refundPercent, tag = "cancel") {
   const p = booking.payment;
-  if (!p?.chargeId || !p.amountPence || refundPercent <= 0) return { stripeRefund: null, refundPence: 0 };
+  if (!p?.chargeId || !p.amountPence) return { stripeRefund: null, refundPence: 0 };
+  if (refundPercent <= 0) {
+    // 0% tier: nothing goes back to the guest. Mark the payment so the
+    // scheduler pays the host their full retained share (it only picks up
+    // "partially_refunded" cancellations).
+    p.status = "partially_refunded";
+    await booking.save();
+    return { stripeRefund: null, refundPence: 0 };
+  }
 
   const refundPence = Math.round((p.amountPence * refundPercent) / 100);
   const stripeRefund = await stripe.refunds.create(
