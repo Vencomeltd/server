@@ -2,11 +2,15 @@ const express = require("express");
 const router = express.Router();
 const Draft = require("../models/Draft");
 const auth = require("../middleware/auth");
+const actAsHost = require("../middleware/actAsHost");
+// A VenCome admin can work on a host's drafts (X-Act-As-Host header); for
+// everyone else this behaves exactly like plain auth.
+const authed = [auth, actAsHost];
 
 // @route   GET /api/drafts
 // @desc    List the host's saved drafts (lightweight — for the picker screen)
 // @access  Private
-router.get("/", auth, async (req, res) => {
+router.get("/", authed, async (req, res) => {
   try {
     const drafts = await Draft.find({ host: req.user.id })
       .select("title step coverImage createdAt updatedAt")
@@ -21,7 +25,7 @@ router.get("/", auth, async (req, res) => {
 // @route   GET /api/drafts/:id
 // @desc    Get one draft's full form data, to resume the wizard
 // @access  Private
-router.get("/:id", auth, async (req, res) => {
+router.get("/:id", authed, async (req, res) => {
   try {
     const draft = await Draft.findOne({ _id: req.params.id, host: req.user.id });
     if (!draft) return res.status(404).json({ error: "Draft not found" });
@@ -35,7 +39,7 @@ router.get("/:id", auth, async (req, res) => {
 // @route   POST /api/drafts
 // @desc    Create a new draft
 // @access  Private
-router.post("/", auth, async (req, res) => {
+router.post("/", authed, async (req, res) => {
   try {
     const { title, step, coverImage, formData } = req.body;
     const draft = await Draft.create({
@@ -56,7 +60,7 @@ router.post("/", auth, async (req, res) => {
 // @route   PUT /api/drafts/:id
 // @desc    Update an existing draft (autosave)
 // @access  Private
-router.put("/:id", auth, async (req, res) => {
+router.put("/:id", authed, async (req, res) => {
   try {
     const { title, step, coverImage, formData } = req.body;
     const update = { updatedAt: new Date() };
@@ -81,7 +85,7 @@ router.put("/:id", auth, async (req, res) => {
 // @route   DELETE /api/drafts/:id
 // @desc    Delete a draft
 // @access  Private
-router.delete("/:id", auth, async (req, res) => {
+router.delete("/:id", authed, async (req, res) => {
   try {
     const draft = await Draft.findOneAndDelete({ _id: req.params.id, host: req.user.id });
     if (!draft) return res.status(404).json({ error: "Draft not found" });
