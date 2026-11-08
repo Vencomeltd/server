@@ -722,7 +722,8 @@ const createListingHandler = async (req, res) => {
       // A room is one more room in a building the host already published: no
       // "new space" emails, and it never makes someone a host.
       if (isUnit) {
-        return res.status(201).json({ success: true, message: "Room created successfully", property: savedProperty, unit: savedProperty });
+        const room = roomPayload(savedProperty, building);
+        return res.status(201).json({ success: true, message: "Room created successfully", property: room, unit: room });
       }
 
       // Notify admins of new listing
@@ -2051,11 +2052,14 @@ const updateListingHandler = async (req, res) => {
     await client.del(`property:${req.params.id}`);
     if (property.slug) await client.del(`property:${property.slug}`);
 
+    // A room comes back as it is read: with its building's photos if it has none.
+    const parent = isUnit ? await Property.findById(property.parentBuilding) : null;
+    const returned = parent ? roomPayload(updatedProperty, parent) : updatedProperty;
     res.json({
       success: true,
       message: "Property updated successfully",
-      property: updatedProperty,
-      ...(isUnit && { unit: updatedProperty }),
+      property: returned,
+      ...(isUnit && { unit: returned }),
     });
   } catch (err) {
     console.error("Error updating property:", err);

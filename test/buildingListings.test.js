@@ -190,10 +190,12 @@ test("a host adds a unit under their building", async () => {
   assert.equal(status, 201);
   const unit = body.unit;
   assert.equal(unit.listingType, "unit");
-  assert.equal(unit.parentBuilding, String(building._id));
+  assert.equal(unit.parentBuilding._id, String(building._id));
   assert.equal(unit.host, String(building.host));
   assert.equal(unit.title, "Suite 2A");
-  assert.deepEqual(unit.images, []);
+  assert.deepEqual(store.get(unit._id).images, []); // no photos of its own...
+  assert.equal(unit.imagesInherited, true); // ...so it shows the building's
+  assert.deepEqual(unit.images, building.images);
   assert.equal(unit.pricing.monthly, 1000);
   assert.equal(unit.pricing.minimumTermMonths, 6);
   assert.equal(unit.pricing.vat.monthly.grossPence, 120000);
@@ -509,15 +511,18 @@ test("POST /properties makes a room: building's host, location and category; eve
   const room = body.property;
   assert.deepEqual(body.unit, room);
   assert.equal(room.listingType, "unit");
-  assert.equal(room.parentBuilding, String(building._id));
+  assert.deepEqual(room.parentBuilding, { _id: String(building._id), slug: "synthetic-tower", title: "Synthetic Tower" });
   assert.equal(room.parentBuildingTitle, "Synthetic Tower");
   assert.equal(room.host, String(building.host));
   assert.deepEqual({ ...room.location }, { address: "1 Synthetic Street", city: "Testville", country: "UK", neighborhood: "" });
   assert.equal(room.category, String(building.category));
   assert.equal(room.subcategory, "Offices");
   assert.equal(room.unitsCount, 1);
-  assert.equal(room.leaseAgreement ?? null, null);
-  assert.deepEqual(room.images, []);
+  assert.equal(room.leaseAgreement, "https://synthetic.example.test/lease.pdf"); // the building's, never its own
+  assert.equal(store.get(room._id).leaseAgreement ?? null, null);
+  assert.deepEqual(store.get(room._id).images, []);
+  assert.equal(room.imagesInherited, true);
+  assert.equal(room.path, `/property/synthetic-tower/3c`);
   assert.equal(room.roomSlug, "3c");
   assert.equal(room.isActive, true);
   assert.equal(room.moderationStatus, "approved");
@@ -596,9 +601,10 @@ test("PUT /properties/:id edits a room's own fields but not its location, catego
   assert.equal(edited.unitDetails.availability.status, "let");
   assert.equal(edited.unitDetails.label, "Unit 1"); // kept
   assert.equal(edited.location.city, "Testville");
-  assert.equal(edited.subcategory ?? "", "");
+  assert.equal(edited.subcategory, "Offices"); // the building's; "Hacked" ignored
+  assert.equal(store.get(String(room._id)).subcategory ?? "", "");
   assert.equal(edited.unitsCount, 1);
-  assert.equal(edited.leaseAgreement ?? null, null);
+  assert.equal(store.get(String(room._id)).leaseAgreement ?? null, null);
   assert.equal(edited.roomSlug ?? null, null); // links never change on a rename
   assert.equal((await call("PUT", `/properties/${room._id}`, { user: HOST, body: { pricing: JSON.stringify({ pricingType: "DAILY" }) } })).status, 400);
   assert.equal((await call("PUT", `/properties/${room._id}`, { user: OTHER_HOST, body: { title: "x" } })).status, 403);
@@ -741,4 +747,16 @@ test("deleting a room follows the normal rules and leaves bookings and the build
   assert.equal(store.has(String(room._id)), false);
   assert.equal(store.has(String(building._id)), true);
   assert.equal((await call("GET", `/properties/${building._id}`)).status, 404); // no active room left
+});
+
+test("fromPriceUnit falls back to week, day, then hour when no available room has a monthly rate", async () => {
+  const building = seed();
+  seedUnit(building, { title: "Hourly", pricing: { pricingType: "HOURLY", hourly: 5 } });
+  seedUnit(building, { title: "Weekly", pricing: { pricingType: "DAILY", weekly: 200 } });
+  let res = await call("GET", `/properties/${building._id}`);
+  assert.deepEqual([res.body.property.fromPriceUnit, res.body.property.fromPricePence], ["week", 20000]);
+  store.delete([...store.values()].find((d) => d.title === "Weekly")._id.toString());
+  cache.clear();
+  res = await call("GET", `/properties/${building._id}`);
+  assert.deepEqual([res.body.property.fromPriceUnit, res.body.property.fromPricePence], ["hour", 500]);
 });
