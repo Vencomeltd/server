@@ -325,6 +325,22 @@ const propertySchema = new mongoose.Schema(
     // "Read More" preview on the listing page, and gated behind a checkbox
     // at checkout (see Booking.listingTermsSnapshot for the agreement record).
     listingTerms: { type: String, default: "" },
+    // "single" is every listing made before buildings existed. A "building" is
+    // one representative listing (photos, address, amenities) with "unit"
+    // rooms under it. Units have no photos of their own, never appear in
+    // search/lists, and are enquiry-only (see routes/properties.js).
+    listingType: { type: String, enum: ["single", "building", "unit"], default: "single" },
+    parentBuilding: { type: mongoose.Schema.Types.ObjectId, ref: "Property" },
+    unitDetails: {
+      label: String,
+      sizeSqFt: Number,
+      capacity: Number,
+      features: [String],
+      availability: {
+        status: { type: String, enum: ["available", "available_from", "let"] },
+        availableFrom: Date,
+      },
+    },
   },
   { timestamps: true }
 );
@@ -338,5 +354,6 @@ propertySchema.index({ "location.country": 1 });
 propertySchema.index({ "coordinates.latitude": 1, "coordinates.longitude": 1 });
 propertySchema.index({ rating: -1 });
 propertySchema.index({ createdAt: -1 });
+propertySchema.index({ parentBuilding: 1 });
 
 module.exports = mongoose.model("Property", propertySchema);

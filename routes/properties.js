@@ -24,6 +24,15 @@ const geoip = require("geoip-lite");
 const { generateUniqueSlug, generateSlug } = require("../utils/slugify");
 
 const { buildUnitTax } = require("../utils/vatPricing");
+const {
+  NOT_UNIT,
+  MAX_UNITS_PER_BUILDING,
+  attachBuildingStats,
+  buildingUnitsDetail,
+  cleanUnitDetails,
+  cleanUnitPricing,
+  cleanUnitTitle,
+} = require("../utils/buildingListings");
 
 // minBookingHours from the listing editor: a whole number of hours, 0-24
 // (0 = no minimum). Returns undefined when not sent, null when invalid.
@@ -263,7 +272,10 @@ router.post(
         coordinates = JSON.parse(req.body.coordinates);
         features = JSON.parse(req.body.features);
         extras = JSON.parse(req.body.extras || "[]");
-        pricing = applyVatSettings(JSON.parse(req.body.pricing));
+        // A building is a showcase for its units, so it needs no price of its own.
+        pricing = applyVatSettings(
+          req.body.listingType === "building" && !req.body.pricing ? {} : JSON.parse(req.body.pricing)
+        );
         // The client sends discounts as its own field, separate from
         // pricing -- fold it in here since that's where the schema keeps it
         // (pricing.discounts). This field was previously never read at all,
@@ -351,6 +363,16 @@ router.post(
       // Optional listing-specific terms (separate from the platform-wide
       // Terms & Conditions) -- plain text, not required.
       const listingTerms = typeof req.body.listingTerms === "string" ? req.body.listingTerms.trim() : "";
+
+      if (req.body.listingType !== undefined && !["single", "building"].includes(req.body.listingType)) {
+        cleanupTempFiles([
+          ...(req.files?.images || []),
+          ...(req.files?.cqcDocuments || []),
+          ...(req.files?.leaseFile || []),
+          ...(req.files?.video || []),
+        ]);
+        return res.status(400).json({ error: "listingType must be single or building (units are added to a building)" });
+      }
 
       // ── Required fields check ──
       if (!title || !description) {
@@ -607,6 +629,7 @@ router.post(
         video: videoUrl,
         icalUrl: icalUrl || undefined,
         listingTerms,
+        listingType: req.body.listingType === "building" ? "building" : "single",
         isActive: true,
         moderationStatus: "approved",
       });
@@ -756,7 +779,7 @@ router.get("/", async (req, res) => {
       return res.json({ success: true, ...payload, properties: payload.properties?.map(publicListing), cached: true });
     }
 
-    const filter = { isActive: true, ...(hostId && { host: hostId }) };
+    const filter = { isActive: true, ...NOT_UNIT, ...(hostId && { host: hostId }) };
 
     // Missing entirely before -- this is what Homepage.jsx's Featured
     // Listings section calls (GET /properties?limit=8), so an unpublished
@@ -781,7 +804,7 @@ router.get("/", async (req, res) => {
       total,
       page,
       totalPages: Math.ceil(total / limit),
-      properties,
+      properties: await attachBuildingStats(properties),
     };
 
     await client.setEx(cacheKey, 600, JSON.stringify(responsePayload));
@@ -840,8 +863,8 @@ router.get("/near-me", async (req, res) => {
         .populate("categories", "name");
 
     if (!geo?.ll) {
-      const properties = await listQuery({ isActive: true }).limit(100);
-      return res.json({ success: true, properties, sorted: false });
+      const properties = await listQuery({ isActive: true, ...NOT_UNIT }).limit(100);
+      return res.json({ success: true, properties: await attachBuildingStats(properties), sorted: false });
     }
 
     // The nearest 100 of all active listings, sorted in the database.
@@ -849,7 +872,7 @@ router.get("/near-me", async (req, res) => {
     // rather than being dropped, so they're still discoverable.
     const [visitorLat, visitorLng] = geo.ll;
     const nearest = await Property.aggregate([
-      { $match: { isActive: true } },
+      { $match: { isActive: true, ...NOT_UNIT } },
       { $project: { distance: distanceKmExpression(visitorLat, visitorLng) } },
       { $addFields: { hasDistance: { $cond: [{ $eq: ["$distance", null] }, 0, 1] } } },
       { $sort: { hasDistance: -1, distance: 1, _id: 1 } },
@@ -861,7 +884,7 @@ router.get("/near-me", async (req, res) => {
 
     res.json({
       success: true,
-      properties,
+      properties: await attachBuildingStats(properties),
       sorted: true,
       visitorCity: geo.city || null,
     });
@@ -877,7 +900,7 @@ router.get("/near-me", async (req, res) => {
 router.get("/cities", async (req, res) => {
   try {
     const rows = await Property.aggregate([
-      { $match: { isActive: true } },
+      { $match: { isActive: true, ...NOT_UNIT } },
       {
         $group: {
           _id: { country: "$location.country", city: "$location.city" },
@@ -918,7 +941,7 @@ router.get("/cities", async (req, res) => {
 router.get("/neighborhoods", async (req, res) => {
   try {
     const rows = await Property.aggregate([
-      { $match: { isActive: true, "location.neighborhood": { $nin: [null, ""] } } },
+      { $match: { isActive: true, ...NOT_UNIT, "location.neighborhood": { $nin: [null, ""] } } },
       { $group: { _id: "$location.neighborhood", count: { $sum: 1 } } },
       { $sort: { count: -1 } },
     ]);
@@ -949,6 +972,7 @@ router.get("/by-service-location", async (req, res) => {
     const candidates = await Property.find({
       $or: [{ subcategory }, { subcategories: subcategory }],
       isActive: true,
+      ...NOT_UNIT,
     })
       .populate(publicHostPopulate("firstName lastName displayName profileImage"))
       .populate("category", "name slug")
@@ -958,7 +982,7 @@ router.get("/by-service-location", async (req, res) => {
       (p) => p.location?.neighborhood && generateSlug(p.location.neighborhood) === locationSlug
     );
 
-    res.json({ success: true, properties });
+    res.json({ success: true, properties: await attachBuildingStats(properties) });
   } catch (err) {
     console.error("Error fetching service+location listings:", err);
     res.status(500).json({ error: "Server error" });
@@ -1005,7 +1029,7 @@ router.get("/search", async (req, res) => {
     // My Listings never actually removed it from search/category
     // browsing/"Browse by City", only from the /properties/:id detail
     // page (which does check isActive) and the homepage's aggregate feed.
-    let query = { isActive: true };
+    let query = { isActive: true, ...NOT_UNIT };
 
     const searchTerm = searchQuery || location;
 
@@ -1134,7 +1158,8 @@ router.get("/search", async (req, res) => {
       delete json.blockedDates;
       return json;
     });
-    const responsePayload = { count: listed.length, properties: listed };
+    const cards = await attachBuildingStats(listed);
+    const responsePayload = { count: cards.length, properties: cards };
 
     await client.setEx(cacheKey, 600, JSON.stringify(responsePayload));
 
@@ -1172,13 +1197,13 @@ router.get("/me", auth, async (req, res) => {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
 
     const [properties, total] = await Promise.all([
-      Property.find({ host: req.user.id })
+      Property.find({ host: req.user.id, ...NOT_UNIT })
         .populate("category", "name")
         .populate("categories", "name")
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit),
-      Property.countDocuments({ host: req.user.id }),
+      Property.countDocuments({ host: req.user.id, ...NOT_UNIT }),
     ]);
 
     res.json({
@@ -1187,7 +1212,7 @@ router.get("/me", auth, async (req, res) => {
       total,
       page,
       totalPages: Math.ceil(total / limit),
-      properties,
+      properties: await attachBuildingStats(properties),
     });
   } catch (err) {
     console.error("Error fetching user properties:", err);
@@ -1315,10 +1340,15 @@ router.get("/:id", async (req, res) => {
     const cached = await client.get(`property:${propertyId}`);
     if (cached) {
       const cachedProperty = JSON.parse(cached);
-      if (cachedProperty.isActive) {
+      // Units are never cached: their reply depends on the building's state.
+      if (cachedProperty.isActive && cachedProperty.listingType !== "unit") {
+        const publicProperty = publicListing(cachedProperty);
         return res.json({
           success: true,
-          property: publicListing(cachedProperty),
+          property:
+            publicProperty.listingType === "building"
+              ? { ...publicProperty, ...(await buildingUnitsDetail(publicProperty._id)) }
+              : publicProperty,
           cached: true,
         });
       }
@@ -1357,6 +1387,27 @@ router.get("/:id", async (req, res) => {
       }
     }
 
+    // A unit shows its building's photos and says which building it belongs
+    // to (so the client can send visitors to the building page). It is only
+    // visible while the building is.
+    if (property.listingType === "unit") {
+      const building = await Property.findById(property.parentBuilding).select("slug title images coverImage isActive host");
+      const canSee = requesterIsAdmin || (requesterId && property.host?._id?.toString() === requesterId);
+      if (!building || (!building.isActive && !canSee)) {
+        return res.status(404).json({ error: "Property not found" });
+      }
+      return res.json({
+        success: true,
+        property: {
+          ...property.toJSON(),
+          images: building.images,
+          coverImage: building.coverImage,
+          parentBuilding: { _id: building._id, slug: building.slug, title: building.title },
+        },
+        cached: false,
+      });
+    }
+
     if (property.isActive) {
       await client.setEx(
         `property:${propertyId}`,
@@ -1365,7 +1416,14 @@ router.get("/:id", async (req, res) => {
       );
     }
 
-    res.json({ success: true, property, cached: false });
+    res.json({
+      success: true,
+      property:
+        property.listingType === "building"
+          ? { ...property.toJSON(), ...(await buildingUnitsDetail(property._id)) }
+          : property,
+      cached: false,
+    });
   } catch (err) {
     console.error("Error fetching property:", err);
     if (err.name === "CastError") {
@@ -1400,6 +1458,123 @@ router.get("/:id/availability", async (req, res) => {
     if (err.name === "CastError") {
       return res.status(400).json({ error: "Invalid property ID format" });
     }
+    res.status(500).json({ error: "Server error", details: err.message });
+  }
+});
+
+// ====================== BUILDING UNITS ======================
+// A unit is a Property with listingType "unit" under a "building": it has a
+// price, size, capacity, features and availability but no photos (it shows
+// its building's), and guests enquire about it rather than book it.
+
+const canManageListing = async (userId, property) => {
+  if (property.host.toString() === userId) return true;
+  const requester = await User.findById(userId).select("isAdmin");
+  return Boolean(requester?.isAdmin);
+};
+
+// Validated unit fields from a request body. With `existing` (an update) only
+// what was sent changes; the returned `fields` are ready to assign.
+function readUnitInput(body, existing) {
+  const fields = {};
+  if (!existing || body.title !== undefined) {
+    const title = cleanUnitTitle(body.title);
+    if (title.error) return { error: title.error };
+    fields.title = title.value;
+  }
+  if (!existing || body.pricing !== undefined) {
+    const pricing = cleanUnitPricing(body.pricing);
+    if (pricing.error) return { error: pricing.error };
+    fields.pricing = applyVatSettings(pricing.value);
+  }
+  if (!existing || body.unitDetails !== undefined) {
+    const sent = body.unitDetails;
+    const merged = existing && sent && typeof sent === "object" && !Array.isArray(sent) ? { ...existing.unitDetails?.toObject?.(), ...sent } : sent;
+    const unitDetails = cleanUnitDetails(merged);
+    if (unitDetails.error) return { error: unitDetails.error };
+    fields.unitDetails = unitDetails.value;
+  }
+  return { fields };
+}
+
+// ✅ Add a unit to a building (building owner or admin)
+router.post("/:buildingId/units", auth, async (req, res) => {
+  try {
+    const building = await Property.findById(req.params.buildingId);
+    if (!building) return res.status(404).json({ error: "Property not found" });
+    if (!(await canManageListing(req.user.id, building))) {
+      return res.status(403).json({ error: "Unauthorized: You are not the host of this property" });
+    }
+    if (building.listingType !== "building") {
+      return res.status(400).json({ error: "Units can only be added to a building listing" });
+    }
+
+    const { fields, error } = readUnitInput(req.body);
+    if (error) return res.status(400).json({ error });
+
+    const unitCount = await Property.countDocuments({ parentBuilding: building._id, listingType: "unit" });
+    if (unitCount >= MAX_UNITS_PER_BUILDING) {
+      return res.status(400).json({ error: `A building can have at most ${MAX_UNITS_PER_BUILDING} units` });
+    }
+
+    const unit = await new Property({
+      ...fields,
+      // The schema requires these; a unit shares its building's address and
+      // is never listed on its own.
+      description: fields.title,
+      location: building.location,
+      coordinates: building.coordinates,
+      listingType: "unit",
+      parentBuilding: building._id,
+      host: building.host,
+      createdBy: req.user.impersonatedBy || req.user.id,
+      isActive: true,
+      moderationStatus: "approved",
+    }).save();
+
+    res.status(201).json({ success: true, unit });
+  } catch (err) {
+    console.error("Error adding unit:", err);
+    if (err.name === "CastError") return res.status(400).json({ error: "Invalid property ID format" });
+    res.status(500).json({ error: "Server error", details: err.message });
+  }
+});
+
+// ✅ Edit a unit (owner or admin); only the fields sent change
+router.put("/units/:unitId", auth, async (req, res) => {
+  try {
+    const unit = await Property.findById(req.params.unitId);
+    if (!unit || unit.listingType !== "unit") return res.status(404).json({ error: "Unit not found" });
+    if (!(await canManageListing(req.user.id, unit))) {
+      return res.status(403).json({ error: "Unauthorized: You are not the host of this property" });
+    }
+
+    const { fields, error } = readUnitInput(req.body, unit);
+    if (error) return res.status(400).json({ error });
+    Object.assign(unit, fields);
+    if (fields.title) unit.description = fields.title;
+
+    res.json({ success: true, unit: await unit.save() });
+  } catch (err) {
+    console.error("Error updating unit:", err);
+    if (err.name === "CastError") return res.status(400).json({ error: "Invalid property ID format" });
+    res.status(500).json({ error: "Server error", details: err.message });
+  }
+});
+
+// ✅ Delete a unit (owner or admin)
+router.delete("/units/:unitId", auth, async (req, res) => {
+  try {
+    const unit = await Property.findById(req.params.unitId);
+    if (!unit || unit.listingType !== "unit") return res.status(404).json({ error: "Unit not found" });
+    if (!(await canManageListing(req.user.id, unit))) {
+      return res.status(403).json({ error: "Unauthorized: You are not the host of this property" });
+    }
+    await unit.deleteOne();
+    res.status(204).send();
+  } catch (err) {
+    console.error("Error deleting unit:", err);
+    if (err.name === "CastError") return res.status(400).json({ error: "Invalid property ID format" });
     res.status(500).json({ error: "Server error", details: err.message });
   }
 });
@@ -1984,6 +2159,10 @@ router.delete("/:id", auth, async (req, res) => {
     }
 
     await property.deleteOne();
+    // A building's units go with it, the same way (they have no photos).
+    if (property.listingType === "building") {
+      await Property.deleteMany({ parentBuilding: property._id, listingType: "unit" });
+    }
 
     // FIX: bust cache before responding, and send email fire-and-forget
     await client.del(`property:${req.params.id}`);
