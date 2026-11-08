@@ -327,10 +327,17 @@ const propertySchema = new mongoose.Schema(
     listingTerms: { type: String, default: "" },
     // "single" is every listing made before buildings existed. A "building" is
     // one representative listing (photos, address, amenities) with "unit"
-    // rooms under it. Units have no photos of their own, never appear in
-    // search/lists, and are enquiry-only (see routes/properties.js).
+    // rooms under it. A unit is a full bookable listing (own price, booking
+    // settings, availability), has optional photos of its own (else it shows
+    // the building's), and never appears in search/lists on its own.
     listingType: { type: String, enum: ["single", "building", "unit"], default: "single" },
     parentBuilding: { type: mongoose.Schema.Types.ObjectId, ref: "Property" },
+    // Rooms (units) only. A room is a full bookable listing under a building:
+    // roomSlug is unique within its building (URL /property/<building>/<room>),
+    // parentBuildingTitle is a copy of the building's title kept in step by
+    // PUT /properties/:id so emails and invoices can say "<room> at <building>".
+    roomSlug: { type: String, trim: true },
+    parentBuildingTitle: { type: String, trim: true },
     unitDetails: {
       label: String,
       sizeSqFt: Number,
@@ -354,6 +361,6 @@ propertySchema.index({ "location.country": 1 });
 propertySchema.index({ "coordinates.latitude": 1, "coordinates.longitude": 1 });
 propertySchema.index({ rating: -1 });
 propertySchema.index({ createdAt: -1 });
-propertySchema.index({ parentBuilding: 1 });
+propertySchema.index({ parentBuilding: 1, roomSlug: 1 });
 
 module.exports = mongoose.model("Property", propertySchema);

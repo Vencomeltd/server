@@ -5,7 +5,7 @@ const { buildLandingResponse } = require("../utils/landing/response");
 const { legacyTargetPath } = require("../utils/landing/legacy");
 const { toUrlSlug } = require("../utils/landing/slug");
 const { generateSlug } = require("../utils/slugify");
-const { NOT_UNIT, attachBuildingStats } = require("../utils/buildingListings");
+const { publicListingFilter, attachBuildingStats } = require("../utils/buildingListings");
 
 const router = express.Router();
 
@@ -41,7 +41,7 @@ router.get("/legacy", async (req, res) => {
     const location = String(req.query.location || "");
     const candidates = await Property.find({
       isActive: true,
-      ...NOT_UNIT,
+      ...(await publicListingFilter()),
       $or: [{ subcategory: hub.serviceName }, { subcategories: hub.serviceName }],
     })
       .select("location")
@@ -67,7 +67,7 @@ router.get("/", async (req, res) => {
     const result = buildLandingResponse(index, page, req.query.page);
     if (result.status === 404) return res.status(404).json({ error: "Page not found" });
 
-    const docs = await Property.find({ _id: { $in: result.listingIds }, isActive: true, ...NOT_UNIT })
+    const docs = await Property.find({ _id: { $in: result.listingIds }, isActive: true, ...(await publicListingFilter()) })
       .populate("host", "firstName lastName displayName profileImage")
       .populate("category", "name slug")
       // Cards show these names -- unpopulated, they'd be bare ids.

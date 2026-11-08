@@ -77,6 +77,7 @@ client.setEx = async () => {};
 
 const app = express();
 app.use('/hosts', require('../routes/hosts'));
+Property.distinct = async () => []; // buildings: none here
 app.use('/properties', require('../routes/properties'));
 app.use('/search', require('../routes/search'));
 const server = app.listen(0, '127.0.0.1');

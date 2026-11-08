@@ -30,9 +30,12 @@ const {
   attachBuildingStats,
   buildingUnitsDetail,
   cleanUnitDetails,
-  cleanUnitPricing,
-  cleanUnitTitle,
+  publicListingFilter,
+  roomPath,
+  roomPhotos,
+  uniqueRoomSlug,
 } = require("../utils/buildingListings");
+const { listingName } = require("../utils/listingName");
 
 // minBookingHours from the listing editor: a whole number of hours, 0-24
 // (0 = no minimum). Returns undefined when not sent, null when invalid.
@@ -244,19 +247,33 @@ const deleteFilesFromR2 = async (imageUrls) => {
 
 // ====================== ROUTES ======================
 
-// ✅ Create a property
-router.post(
-  "/",
-  auth, // reject unauthenticated first
-  validatePricing,
-  upload.fields([
-    { name: "images", maxCount: 45 },
-    { name: "cqcDocuments", maxCount: 10 },
-    { name: "leaseFile", maxCount: 1 }, // ✅ NEW: Added lease file field
-    { name: "video", maxCount: 1 },
-  ]),
-  async (req, res) => {
+// Creating a listing takes the files below. A room (listingType "unit" with a
+// parentBuilding) is created here too -- POST /:buildingId/units calls the same
+// handler -- and takes its host, location and category from its building.
+const listingUpload = upload.fields([
+  { name: "images", maxCount: 45 },
+  { name: "cqcDocuments", maxCount: 10 },
+  { name: "leaseFile", maxCount: 1 }, // ✅ NEW: Added lease file field
+  { name: "video", maxCount: 1 },
+]);
+const createListingHandler = async (req, res) => {
     try {
+      const isUnit = req.body.listingType === "unit";
+      let building;
+      if (isUnit) {
+        const found = await loadBuildingForRoom(req.user.id, req.body.parentBuilding);
+        if (found.error) {
+          cleanupTempFiles([
+            ...(req.files?.images || []),
+            ...(req.files?.cqcDocuments || []),
+            ...(req.files?.leaseFile || []),
+            ...(req.files?.video || []),
+          ]);
+          return res.status(found.status).json({ error: found.error });
+        }
+        building = found.building.toObject();
+      }
+
       // ── Parse JSON safely ──
       let location,
         coordinates,
@@ -268,9 +285,10 @@ router.post(
         timeBlocks;
 
       try {
-        location = JSON.parse(req.body.location);
-        coordinates = JSON.parse(req.body.coordinates);
-        features = JSON.parse(req.body.features);
+        // A room's location comes from its building, and it needs no features.
+        location = isUnit ? building.location : JSON.parse(req.body.location);
+        coordinates = isUnit ? building.coordinates : JSON.parse(req.body.coordinates);
+        features = JSON.parse(req.body.features || (isUnit ? "{}" : undefined));
         extras = JSON.parse(req.body.extras || "[]");
         // A building is a showcase for its units, so it needs no price of its own.
         pricing = applyVatSettings(
@@ -302,7 +320,11 @@ router.post(
         });
       }
 
-      const { title, description, category, subcategory } = req.body;
+      const title = req.body.title;
+      // A room that is not described is described by its title.
+      const description = req.body.description || (isUnit ? title : undefined);
+      const category = isUnit ? building.category && String(building.category) : req.body.category;
+      const subcategory = isUnit ? building.subcategory : req.body.subcategory;
       let categoriesArray = [];
       let subcategoriesArray = [];
       try {
@@ -311,6 +333,34 @@ router.post(
       } catch (e) {
         categoriesArray = [];
         subcategoriesArray = [];
+      }
+      if (isUnit) {
+        categoriesArray = (building.categories || []).map(String);
+        subcategoriesArray = building.subcategories || [];
+      }
+
+      // A room's own details (label, size, capacity, features, whether it is
+      // let) -- validated like the building-unit editor always did.
+      let unitDetails;
+      if (isUnit) {
+        const roomFiles = [...(req.files?.images || []), ...(req.files?.cqcDocuments || []), ...(req.files?.leaseFile || []), ...(req.files?.video || [])];
+        let sent = {};
+        try {
+          sent = req.body.unitDetails ? JSON.parse(req.body.unitDetails) : {};
+        } catch {
+          sent = null;
+        }
+        const cleaned = cleanUnitDetails(sent);
+        if (cleaned.error) {
+          cleanupTempFiles(roomFiles);
+          return res.status(400).json({ error: cleaned.error });
+        }
+        unitDetails = cleaned.value;
+        const pricingError = roomPricingError(pricing);
+        if (pricingError) {
+          cleanupTempFiles(roomFiles);
+          return res.status(400).json({ error: pricingError });
+        }
       }
       // req.body.availability is a JSON-stringified {openDays, openTime,
       // closeTime, minNotice} object from the client (see EditSpace.jsx's
@@ -345,7 +395,7 @@ router.post(
           depositPolicy = undefined;
         }
       }
-      const host = req.user.id;
+      const host = isUnit ? building.host : req.user.id;
 
       // Optional iCal feed URL set during creation (same field the
       // PropertyAvailability/EditSpace pages patch later) -- validated the
@@ -364,14 +414,14 @@ router.post(
       // Terms & Conditions) -- plain text, not required.
       const listingTerms = typeof req.body.listingTerms === "string" ? req.body.listingTerms.trim() : "";
 
-      if (req.body.listingType !== undefined && !["single", "building"].includes(req.body.listingType)) {
+      if (req.body.listingType !== undefined && !["single", "building", "unit"].includes(req.body.listingType)) {
         cleanupTempFiles([
           ...(req.files?.images || []),
           ...(req.files?.cqcDocuments || []),
           ...(req.files?.leaseFile || []),
           ...(req.files?.video || []),
         ]);
-        return res.status(400).json({ error: "listingType must be single or building (units are added to a building)" });
+        return res.status(400).json({ error: "listingType must be single, building or unit" });
       }
 
       // ── Required fields check ──
@@ -388,7 +438,7 @@ router.post(
       }
 
       // ── Category / Subcategory validation ──
-      if (category?.trim()) {
+      if (!isUnit && category?.trim()) {
         const categoryDoc = await Category.findById(category);
         if (!categoryDoc) {
           cleanupTempFiles([
@@ -401,7 +451,7 @@ router.post(
         }
       }
 
-      if (categoriesArray.length > 0) {
+      if (!isUnit && categoriesArray.length > 0) {
         const foundCategories = await Category.find({ _id: { $in: categoriesArray } });
         if (foundCategories.length !== categoriesArray.length) {
           cleanupTempFiles([
@@ -473,6 +523,18 @@ router.post(
       // ── Handle image upload to R2 ──
       let r2ImageUrls = [];
       const imageFiles = req.files?.images || [];
+      if (isUnit) {
+        let keptCount = 0;
+        try {
+          keptCount = JSON.parse(req.body.existingImages || "[]").length;
+        } catch {
+          keptCount = 0;
+        }
+        if (imageFiles.length + keptCount > MAX_ROOM_PHOTOS) {
+          cleanupTempFiles([...imageFiles, ...(req.files?.cqcDocuments || []), ...(req.files?.leaseFile || []), ...(req.files?.video || [])]);
+          return res.status(400).json({ error: `A room can have at most ${MAX_ROOM_PHOTOS} photos` });
+        }
+      }
       if (imageFiles.length > 0) {
         try {
           r2ImageUrls = await uploadFilesToR2(imageFiles);
@@ -501,8 +563,10 @@ router.post(
       }
 
       // ✅ NEW: Handle lease agreement upload
-      let leaseAgreementUrl = req.body.existingLeaseAgreement || null;
-      const leaseFiles = req.files?.leaseFile || [];
+      // A room has no lease of its own: it is under its building's.
+      let leaseAgreementUrl = isUnit ? null : req.body.existingLeaseAgreement || null;
+      const leaseFiles = isUnit ? [] : req.files?.leaseFile || [];
+      if (isUnit) cleanupTempFiles(req.files?.leaseFile);
       if (leaseFiles.length > 0) {
         try {
           const uploadedLeaseUrls = await uploadFilesToR2(leaseFiles);
@@ -551,7 +615,7 @@ router.post(
       // Publish action (only the wizard's own step-4 gate did, which is
       // bypassable via a resumed draft or back/forward navigation) -- a
       // listing could go live with zero photos and no error at all.
-      if (allImages.length === 0) {
+      if (allImages.length === 0 && !isUnit) {
         cleanupTempFiles([
           ...(req.files?.images || []),
           ...(req.files?.cqcDocuments || []),
@@ -565,7 +629,7 @@ router.post(
 
       const coverImageIndex = parseInt(req.body.coverImageIndex) || 0;
       const coverImage =
-        allImages.length > 0 ? allImages[coverImageIndex] || allImages[0] : null;
+        allImages.length > 0 ? allImages[coverImageIndex] || allImages[0] : isUnit ? undefined : null;
 
       // ── Validate custom availability ──
       if (
@@ -591,6 +655,12 @@ router.post(
       // ── Save property ──
       const slug = await generateUniqueSlug(Property, title);
       const property = new Property({
+        ...(isUnit && {
+          parentBuilding: building._id,
+          parentBuildingTitle: building.title,
+          roomSlug: await uniqueRoomSlug(building._id, unitDetails.label || title),
+          unitDetails,
+        }),
         title,
         slug,
         description,
@@ -616,7 +686,7 @@ router.post(
         deposit,
         depositPolicy,
         timeBlocks,
-        unitsCount: parseInt(req.body.unitsCount, 10) || 1,
+        unitsCount: isUnit ? 1 : parseInt(req.body.unitsCount, 10) || 1,
         minBookingHours,
         blockedDates: blockedDates.map((d) => ({
           start: new Date(d.start),
@@ -629,7 +699,7 @@ router.post(
         video: videoUrl,
         icalUrl: icalUrl || undefined,
         listingTerms,
-        listingType: req.body.listingType === "building" ? "building" : "single",
+        listingType: isUnit ? "unit" : req.body.listingType === "building" ? "building" : "single",
         isActive: true,
         moderationStatus: "approved",
       });
@@ -647,6 +717,12 @@ router.post(
         await Draft.deleteOne({ _id: req.body.draftId, host: req.user.id }).catch(
           (err) => console.error("Draft cleanup on publish failed:", err.message)
         );
+      }
+
+      // A room is one more room in a building the host already published: no
+      // "new space" emails, and it never makes someone a host.
+      if (isUnit) {
+        return res.status(201).json({ success: true, message: "Room created successfully", property: savedProperty, unit: savedProperty });
       }
 
       // Notify admins of new listing
@@ -757,8 +833,8 @@ router.post(
       ]);
       res.status(500).json({ error: "Server error", details: err.message });
     }
-  }
-);
+};
+router.post("/", auth, validatePricing, listingUpload, createListingHandler);
 
 // ✅ Get all properties (paginated)
 router.get("/", async (req, res) => {
@@ -779,7 +855,7 @@ router.get("/", async (req, res) => {
       return res.json({ success: true, ...payload, properties: payload.properties?.map(publicListing), cached: true });
     }
 
-    const filter = { isActive: true, ...NOT_UNIT, ...(hostId && { host: hostId }) };
+    const filter = { isActive: true, ...(await publicListingFilter()), ...(hostId && { host: hostId }) };
 
     // Missing entirely before -- this is what Homepage.jsx's Featured
     // Listings section calls (GET /properties?limit=8), so an unpublished
@@ -863,7 +939,7 @@ router.get("/near-me", async (req, res) => {
         .populate("categories", "name");
 
     if (!geo?.ll) {
-      const properties = await listQuery({ isActive: true, ...NOT_UNIT }).limit(100);
+      const properties = await listQuery({ isActive: true, ...(await publicListingFilter()) }).limit(100);
       return res.json({ success: true, properties: await attachBuildingStats(properties), sorted: false });
     }
 
@@ -872,7 +948,7 @@ router.get("/near-me", async (req, res) => {
     // rather than being dropped, so they're still discoverable.
     const [visitorLat, visitorLng] = geo.ll;
     const nearest = await Property.aggregate([
-      { $match: { isActive: true, ...NOT_UNIT } },
+      { $match: { isActive: true, ...(await publicListingFilter()) } },
       { $project: { distance: distanceKmExpression(visitorLat, visitorLng) } },
       { $addFields: { hasDistance: { $cond: [{ $eq: ["$distance", null] }, 0, 1] } } },
       { $sort: { hasDistance: -1, distance: 1, _id: 1 } },
@@ -900,7 +976,7 @@ router.get("/near-me", async (req, res) => {
 router.get("/cities", async (req, res) => {
   try {
     const rows = await Property.aggregate([
-      { $match: { isActive: true, ...NOT_UNIT } },
+      { $match: { isActive: true, ...(await publicListingFilter()) } },
       {
         $group: {
           _id: { country: "$location.country", city: "$location.city" },
@@ -941,7 +1017,7 @@ router.get("/cities", async (req, res) => {
 router.get("/neighborhoods", async (req, res) => {
   try {
     const rows = await Property.aggregate([
-      { $match: { isActive: true, ...NOT_UNIT, "location.neighborhood": { $nin: [null, ""] } } },
+      { $match: { isActive: true, ...(await publicListingFilter()), "location.neighborhood": { $nin: [null, ""] } } },
       { $group: { _id: "$location.neighborhood", count: { $sum: 1 } } },
       { $sort: { count: -1 } },
     ]);
@@ -972,7 +1048,7 @@ router.get("/by-service-location", async (req, res) => {
     const candidates = await Property.find({
       $or: [{ subcategory }, { subcategories: subcategory }],
       isActive: true,
-      ...NOT_UNIT,
+      ...(await publicListingFilter()),
     })
       .populate(publicHostPopulate("firstName lastName displayName profileImage"))
       .populate("category", "name slug")
@@ -1029,7 +1105,7 @@ router.get("/search", async (req, res) => {
     // My Listings never actually removed it from search/category
     // browsing/"Browse by City", only from the /properties/:id detail
     // page (which does check isActive) and the homepage's aggregate feed.
-    let query = { isActive: true, ...NOT_UNIT };
+    let query = { isActive: true, ...(await publicListingFilter()) };
 
     const searchTerm = searchQuery || location;
 
@@ -1311,27 +1387,103 @@ router.get("/analytics/me", auth, async (req, res) => {
   }
 });
 
+// The public single-listing routes are open to anyone, but an unpublished
+// listing is only visible to its own host and to admins -- so they soft-decode
+// whoever is asking without requiring a token.
+async function softRequester(req) {
+  let requesterId = null;
+  let requesterIsAdmin = false;
+  const token = req.header("Authorization")?.replace("Bearer ", "");
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      requesterId = decoded.id;
+      const requester = await User.findById(decoded.id).select("isAdmin");
+      requesterIsAdmin = Boolean(requester?.isAdmin);
+    } catch (_) {
+      // invalid/expired token -- treat the request as anonymous rather than failing it
+    }
+  }
+  return { requesterId, requesterIsAdmin };
+}
+
+const withListingRelations = (query) =>
+  query
+    .populate(publicHostPopulate("firstName lastName displayName profileImage slug"))
+    .populate("category", "name")
+    .populate("categories", "name")
+    .populate({
+      path: "reviews",
+      populate: {
+        path: "user",
+        select: "firstName lastName displayName profileImage",
+      },
+    });
+
+// A room (unit) as a guest reads it: the full listing plus what it takes from
+// its building -- location, category and lease agreement -- the building's
+// photos when it has none of its own, and its URL.
+function roomPayload(unit, building) {
+  const b = building.toObject ? building.toObject() : building;
+  return {
+    ...(unit.toJSON ? unit.toJSON() : unit),
+    ...roomPhotos(unit, b),
+    location: b.location,
+    coordinates: b.coordinates,
+    category: b.category,
+    subcategory: b.subcategory,
+    categories: b.categories,
+    subcategories: b.subcategories,
+    leaseAgreement: b.leaseAgreement ?? null,
+    parentBuilding: { _id: b._id, slug: b.slug, title: b.title },
+    isBuildingUnit: true,
+    path: roomPath(b, unit),
+  };
+}
+
+// Who may see a room: anyone, while the room and its building are published.
+// Returns the payload, or null for a 404.
+async function visibleRoom(unit, { requesterId, requesterIsAdmin }) {
+  const isOwner = Boolean(requesterId) && String(unit.host?._id || unit.host) === requesterId;
+  if (!unit.isActive && !isOwner && !requesterIsAdmin) return null;
+  const building = await Property.findById(unit.parentBuilding).populate("category", "name").populate("categories", "name");
+  if (!building || (!building.isActive && !isOwner && !requesterIsAdmin)) return null;
+  return roomPayload(unit, building);
+}
+
+const isObjectId = (value) => /^[0-9a-fA-F]{24}$/.test(String(value));
+
+// ✅ Get a room by its building's and its own slug (or ids): the room as a
+// full listing, plus parentBuilding { _id, slug, title } and isBuildingUnit.
+router.get("/:buildingId/rooms/:roomId", async (req, res) => {
+  try {
+    const { buildingId, roomId } = req.params;
+    const requester = await softRequester(req);
+    const building = await (isObjectId(buildingId) ? Property.findById(buildingId) : Property.findOne({ slug: buildingId }));
+    if (!building || building.listingType !== "building") return res.status(404).json({ error: "Property not found" });
+    const room = await withListingRelations(
+      Property.findOne({
+        parentBuilding: building._id,
+        listingType: "unit",
+        $or: [{ roomSlug: roomId }, ...(isObjectId(roomId) ? [{ _id: roomId }] : [])],
+      })
+    );
+    const payload = room && (await visibleRoom(room, requester));
+    if (!payload) return res.status(404).json({ error: "Property not found" });
+    res.json({ success: true, property: payload, cached: false });
+  } catch (err) {
+    console.error("Error fetching room:", err);
+    res.status(500).json({ error: "Server error", details: err.message });
+  }
+});
+
 // ✅ Get single property
 router.get("/:id", async (req, res) => {
   const propertyId = req.params.id;
 
   try {
-    // This route is public (customers view listings without logging in),
-    // but an unpublished/draft listing must only be visible to its own
-    // host -- so we soft-decode whoever's asking without requiring a token.
-    let requesterId = null;
-    let requesterIsAdmin = false;
-    const token = req.header("Authorization")?.replace("Bearer ", "");
-    if (token) {
-      try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        requesterId = decoded.id;
-        const requester = await User.findById(decoded.id).select("isAdmin");
-        requesterIsAdmin = Boolean(requester?.isAdmin);
-      } catch (_) {
-        // invalid/expired token -- treat the request as anonymous rather than failing it
-      }
-    }
+    const requester = await softRequester(req);
+    const { requesterId, requesterIsAdmin } = requester;
 
     // The cache has no notion of "who's asking", so a draft can never be
     // served from it -- caching it risks handing it to the next anonymous
@@ -1343,36 +1495,23 @@ router.get("/:id", async (req, res) => {
       // Units are never cached: their reply depends on the building's state.
       if (cachedProperty.isActive && cachedProperty.listingType !== "unit") {
         const publicProperty = publicListing(cachedProperty);
-        return res.json({
-          success: true,
-          property:
-            publicProperty.listingType === "building"
-              ? { ...publicProperty, ...(await buildingUnitsDetail(publicProperty._id)) }
-              : publicProperty,
-          cached: true,
-        });
+        if (publicProperty.listingType !== "building") return res.json({ success: true, property: publicProperty, cached: true });
+        // A building shows only once it has an active room (its owner and admins always see it).
+        const detail = await buildingUnitsDetail(publicProperty);
+        const isOwner = Boolean(requesterId) && String(cachedProperty.host?._id || cachedProperty.host) === requesterId;
+        if (!detail.units.length && !isOwner && !requesterIsAdmin) return res.status(404).json({ error: "Property not found" });
+        return res.json({ success: true, property: { ...publicProperty, ...detail }, cached: true });
       }
     }
 
     // The URL param may be either a slug (SEO-friendly links) or a raw
     // ObjectId (older shared/indexed links, emails, sitemap entries created
     // before slugs existed) -- accept both so neither breaks.
-    const isObjectId = /^[0-9a-fA-F]{24}$/.test(propertyId);
-    const baseQuery = isObjectId
+    const baseQuery = isObjectId(propertyId)
       ? Property.findById(propertyId)
       : Property.findOne({ slug: propertyId });
 
-    const property = await baseQuery
-      .populate(publicHostPopulate("firstName lastName displayName profileImage slug"))
-      .populate("category", "name")
-      .populate("categories", "name")
-      .populate({
-        path: "reviews",
-        populate: {
-          path: "user",
-          select: "firstName lastName displayName profileImage",
-        },
-      });
+    const property = await withListingRelations(baseQuery);
 
     if (!property) {
       return res.status(404).json({ error: "Property not found" });
@@ -1387,25 +1526,24 @@ router.get("/:id", async (req, res) => {
       }
     }
 
-    // A unit shows its building's photos and says which building it belongs
-    // to (so the client can send visitors to the building page). It is only
-    // visible while the building is.
+    // A room is read exactly as GET /:building/rooms/:room returns it (old
+    // links to a room's id or slug keep working; the client redirects them to
+    // the room's own path). Never cached: it depends on its building's state.
     if (property.listingType === "unit") {
-      const building = await Property.findById(property.parentBuilding).select("slug title images coverImage isActive host");
-      const canSee = requesterIsAdmin || (requesterId && property.host?._id?.toString() === requesterId);
-      if (!building || (!building.isActive && !canSee)) {
+      const payload = await visibleRoom(property, requester);
+      if (!payload) return res.status(404).json({ error: "Property not found" });
+      return res.json({ success: true, property: payload, cached: false });
+    }
+
+    // A building is hidden from the public until it has at least one active
+    // room (its owner and admins always see it).
+    let buildingDetail;
+    if (property.listingType === "building") {
+      buildingDetail = await buildingUnitsDetail(property);
+      const isOwner = Boolean(requesterId) && property.host?._id?.toString() === requesterId;
+      if (!buildingDetail.units.length && !isOwner && !requesterIsAdmin) {
         return res.status(404).json({ error: "Property not found" });
       }
-      return res.json({
-        success: true,
-        property: {
-          ...property.toJSON(),
-          images: building.images,
-          coverImage: building.coverImage,
-          parentBuilding: { _id: building._id, slug: building.slug, title: building.title },
-        },
-        cached: false,
-      });
     }
 
     if (property.isActive) {
@@ -1418,10 +1556,7 @@ router.get("/:id", async (req, res) => {
 
     res.json({
       success: true,
-      property:
-        property.listingType === "building"
-          ? { ...property.toJSON(), ...(await buildingUnitsDetail(property._id)) }
-          : property,
+      property: buildingDetail ? { ...property.toJSON(), ...buildingDetail } : property,
       cached: false,
     });
   } catch (err) {
@@ -1462,10 +1597,15 @@ router.get("/:id/availability", async (req, res) => {
   }
 });
 
-// ====================== BUILDING UNITS ======================
-// A unit is a Property with listingType "unit" under a "building": it has a
-// price, size, capacity, features and availability but no photos (it shows
-// its building's), and guests enquire about it rather than book it.
+// ====================== BUILDING ROOMS (UNITS) ======================
+// A room is a Property with listingType "unit" under a "building": a full
+// bookable listing (price, booking settings, availability, discounts, ...)
+// with optional photos of its own (else it shows the building's). Its host,
+// location and category come from the building, and it has no lease of its
+// own. Creating and editing go through the same handlers as any listing
+// (POST /properties, PUT /:id); the routes below are thin wrappers for them.
+
+const MAX_ROOM_PHOTOS = 10;
 
 const canManageListing = async (userId, property) => {
   if (property.host.toString() === userId) return true;
@@ -1473,122 +1613,120 @@ const canManageListing = async (userId, property) => {
   return Boolean(requester?.isAdmin);
 };
 
-// Validated unit fields from a request body. With `existing` (an update) only
-// what was sent changes; the returned `fields` are ready to assign.
-function readUnitInput(body, existing) {
-  const fields = {};
-  if (!existing || body.title !== undefined) {
-    const title = cleanUnitTitle(body.title);
-    if (title.error) return { error: title.error };
-    fields.title = title.value;
+// The building a room is being added to, if the requester may add to it.
+async function loadBuildingForRoom(userId, buildingId) {
+  if (!buildingId) return { status: 400, error: "parentBuilding is required for a room" };
+  if (!isObjectId(buildingId)) return { status: 400, error: "Invalid property ID format" };
+  const building = await Property.findById(buildingId);
+  if (!building) return { status: 404, error: "Property not found" };
+  if (!(await canManageListing(userId, building))) {
+    return { status: 403, error: "Unauthorized: You are not the host of this property" };
   }
-  if (!existing || body.pricing !== undefined) {
-    const pricing = cleanUnitPricing(body.pricing);
-    if (pricing.error) return { error: pricing.error };
-    fields.pricing = applyVatSettings(pricing.value);
+  if (building.listingType !== "building") return { status: 400, error: "Rooms can only be added to a building listing" };
+  const roomCount = await Property.countDocuments({ parentBuilding: building._id, listingType: "unit" });
+  if (roomCount >= MAX_UNITS_PER_BUILDING) {
+    return { status: 400, error: `A building can have at most ${MAX_UNITS_PER_BUILDING} units` };
   }
-  if (!existing || body.unitDetails !== undefined) {
-    const sent = body.unitDetails;
-    const merged = existing && sent && typeof sent === "object" && !Array.isArray(sent) ? { ...existing.unitDetails?.toObject?.(), ...sent } : sent;
-    const unitDetails = cleanUnitDetails(merged);
-    if (unitDetails.error) return { error: unitDetails.error };
-    fields.unitDetails = unitDetails.value;
-  }
-  return { fields };
+  return { building };
 }
 
-// ✅ Add a unit to a building (building owner or admin)
-router.post("/:buildingId/units", auth, async (req, res) => {
-  try {
-    const building = await Property.findById(req.params.buildingId);
-    if (!building) return res.status(404).json({ error: "Property not found" });
-    if (!(await canManageListing(req.user.id, building))) {
-      return res.status(403).json({ error: "Unauthorized: You are not the host of this property" });
-    }
-    if (building.listingType !== "building") {
-      return res.status(400).json({ error: "Units can only be added to a building listing" });
-    }
-
-    const { fields, error } = readUnitInput(req.body);
-    if (error) return res.status(400).json({ error });
-
-    const unitCount = await Property.countDocuments({ parentBuilding: building._id, listingType: "unit" });
-    if (unitCount >= MAX_UNITS_PER_BUILDING) {
-      return res.status(400).json({ error: `A building can have at most ${MAX_UNITS_PER_BUILDING} units` });
-    }
-
-    const unit = await new Property({
-      ...fields,
-      // The schema requires these; a unit shares its building's address and
-      // is never listed on its own.
-      description: fields.title,
-      location: building.location,
-      coordinates: building.coordinates,
-      listingType: "unit",
-      parentBuilding: building._id,
-      host: building.host,
-      createdBy: req.user.impersonatedBy || req.user.id,
-      isActive: true,
-      moderationStatus: "approved",
-    }).save();
-
-    res.status(201).json({ success: true, unit });
-  } catch (err) {
-    console.error("Error adding unit:", err);
-    if (err.name === "CastError") return res.status(400).json({ error: "Invalid property ID format" });
-    res.status(500).json({ error: "Server error", details: err.message });
+// What a room's pricing must have: a price, and sane term and VAT figures
+// (the schema would otherwise fail these with a 500).
+function roomPricingError(pricing) {
+  if (!["hourly", "daily", "weekly", "monthly", "annual", "weekdayPrice", "hourlyPrice"].some((key) => Number(pricing?.[key]) > 0)) {
+    return "A room needs a price";
   }
+  const term = pricing.minimumTermMonths;
+  if (term !== undefined && term !== null && term !== "" && !(Number.isInteger(Number(term)) && Number(term) >= 2 && Number(term) <= 36)) {
+    return "pricing.minimumTermMonths must be a whole number from 2 to 36";
+  }
+  for (const entry of Object.values(pricing.vat || {})) {
+    if (entry && (!(Number(entry.enteredPence) >= 0) || !(Number(entry.ratePct ?? 20) >= 0 && Number(entry.ratePct ?? 20) <= 100))) {
+      return "pricing.vat needs enteredPence of 0 or more and ratePct between 0 and 100";
+    }
+  }
+  return null;
+}
+
+// The JSON wrappers send nested objects; the shared handlers read JSON text
+// (the multipart form the listing editor sends).
+const JSON_FORM_FIELDS = [
+  "pricing", "discounts", "unitDetails", "bookingSettings", "availability", "blockedDates", "timeBlocks",
+  "extras", "deposit", "depositPolicy", "features", "location", "coordinates", "existingImages",
+];
+const jsonBodyAsForm = (req, _res, next) => {
+  for (const key of JSON_FORM_FIELDS) {
+    if (req.body?.[key] !== undefined && typeof req.body[key] === "object") req.body[key] = JSON.stringify(req.body[key]);
+  }
+  next();
+};
+
+// ✅ Add a room to a building (building owner or admin): POST /properties for a unit
+router.post("/:buildingId/units", auth, listingUpload, jsonBodyAsForm, (req, res) => {
+  req.body.listingType = "unit";
+  req.body.parentBuilding = req.params.buildingId;
+  return createListingHandler(req, res);
 });
 
-// ✅ Edit a unit (owner or admin); only the fields sent change
-router.put("/units/:unitId", auth, async (req, res) => {
+// ✅ Edit a room (owner or admin): PUT /properties/:id for a unit; only the fields sent change
+router.put("/units/:unitId", auth, listingUpload, jsonBodyAsForm, async (req, res) => {
   try {
-    const unit = await Property.findById(req.params.unitId);
+    if (!isObjectId(req.params.unitId)) return res.status(400).json({ error: "Invalid property ID format" });
+    const unit = await Property.findById(req.params.unitId).select("listingType");
     if (!unit || unit.listingType !== "unit") return res.status(404).json({ error: "Unit not found" });
-    if (!(await canManageListing(req.user.id, unit))) {
-      return res.status(403).json({ error: "Unauthorized: You are not the host of this property" });
-    }
-
-    const { fields, error } = readUnitInput(req.body, unit);
-    if (error) return res.status(400).json({ error });
-    Object.assign(unit, fields);
-    if (fields.title) unit.description = fields.title;
-
-    res.json({ success: true, unit: await unit.save() });
+    req.params.id = req.params.unitId;
+    return updateListingHandler(req, res);
   } catch (err) {
     console.error("Error updating unit:", err);
-    if (err.name === "CastError") return res.status(400).json({ error: "Invalid property ID format" });
     res.status(500).json({ error: "Server error", details: err.message });
   }
 });
 
-// ✅ Delete a unit (owner or admin)
+// Deleting a listing: its photos, the listing, a building's rooms, the cache.
+// Existing bookings are left exactly as they are.
+async function removeListing(property) {
+  if (property.images?.length > 0) {
+    try {
+      await deleteFilesFromR2(property.images);
+    } catch (deleteError) {
+      console.error("Error deleting images from R2:", deleteError);
+    }
+  }
+
+  await property.deleteOne();
+  // A building's rooms go with it (and with them their own photos).
+  if (property.listingType === "building") {
+    const rooms = await Property.find({ parentBuilding: property._id, listingType: "unit" }).select("images");
+    for (const room of rooms) {
+      if (room.images?.length > 0) await deleteFilesFromR2(room.images);
+    }
+    await Property.deleteMany({ parentBuilding: property._id, listingType: "unit" });
+  }
+
+  await client.del(`property:${property._id}`);
+  if (property.slug) await client.del(`property:${property.slug}`);
+}
+
+// ✅ Delete a room (owner or admin)
 router.delete("/units/:unitId", auth, async (req, res) => {
   try {
+    if (!isObjectId(req.params.unitId)) return res.status(400).json({ error: "Invalid property ID format" });
     const unit = await Property.findById(req.params.unitId);
     if (!unit || unit.listingType !== "unit") return res.status(404).json({ error: "Unit not found" });
     if (!(await canManageListing(req.user.id, unit))) {
       return res.status(403).json({ error: "Unauthorized: You are not the host of this property" });
     }
-    await unit.deleteOne();
+    await removeListing(unit);
     res.status(204).send();
   } catch (err) {
     console.error("Error deleting unit:", err);
-    if (err.name === "CastError") return res.status(400).json({ error: "Invalid property ID format" });
     res.status(500).json({ error: "Server error", details: err.message });
   }
 });
 
-// ✅ Update a property (with R2 upload + cache bust)
-router.put(
-  "/:id",
-  auth,
-  upload.fields([
-    { name: "images", maxCount: 45 },
-    { name: "leaseFile", maxCount: 1 },
-    { name: "video", maxCount: 1 },
-  ]),
-  async (req, res) => {
+// ✅ Update a property (with R2 upload + cache bust). Also edits a room (unit):
+// everything but its location, category and lease, which are its building's.
+const updateListingHandler = async (req, res) => {
   try {
     const isObjectId = /^[0-9a-fA-F]{24}$/.test(req.params.id);
     const property = isObjectId
@@ -1621,6 +1759,8 @@ router.put(
         });
       }
     }
+
+    const isUnit = property.listingType === "unit";
 
     // A host editing their own rejected listing is trying to fix it, which
     // should send it back to the review queue -- but an admin using this
@@ -1677,7 +1817,32 @@ router.put(
       return res.status(400).json({ error: e.message });
     }
 
-    const { title, description, category } = req.body;
+    // A room's location, category and lease are its building's, not editable here.
+    if (isUnit) {
+      location = undefined;
+      coordinates = undefined;
+      cleanupTempFiles(req.files?.leaseFile);
+    }
+    const { title, description } = req.body;
+    const category = isUnit ? undefined : req.body.category;
+
+    // A room's own details; only what is sent changes.
+    let unitDetails;
+    if (isUnit && req.body.unitDetails !== undefined) {
+      let sent = null;
+      try {
+        sent = JSON.parse(req.body.unitDetails);
+      } catch {
+        sent = null;
+      }
+      const merged = sent && typeof sent === "object" && !Array.isArray(sent) ? { ...property.unitDetails?.toObject?.(), ...sent } : sent;
+      const cleaned = cleanUnitDetails(merged);
+      if (cleaned.error) {
+        cleanupTempFiles([...(req.files?.images || []), ...(req.files?.leaseFile || []), ...(req.files?.video || [])]);
+        return res.status(400).json({ error: cleaned.error });
+      }
+      unitDetails = cleaned.value;
+    }
 
     const minBookingHours = parseMinBookingHours(req.body.minBookingHours);
     if (minBookingHours === null) {
@@ -1734,15 +1899,20 @@ router.put(
     }
 
     if (req.files?.images?.length > 0) {
+      if (isUnit && property.images.length + req.files.images.length > MAX_ROOM_PHOTOS) {
+        cleanupTempFiles(req.files.images);
+        return res.status(400).json({ error: `A room can have at most ${MAX_ROOM_PHOTOS} photos` });
+      }
       try {
         // If the DELETE /:id/images route auto-unpublished this listing
         // for having zero photos, bring it back now that it has at least
-        // one again -- see that route for why it was turned off.
+        // one again -- see that route for why it was turned off. (A room
+        // needs no photos, so it is never turned off for having none.)
         const wasEmpty = property.images.length === 0;
         const newR2Urls = await uploadFilesToR2(req.files.images);
         property.images = [...property.images, ...newR2Urls];
         if (!property.coverImage) property.coverImage = newR2Urls[0];
-        if (wasEmpty && !property.isActive) property.isActive = true;
+        if (wasEmpty && !property.isActive && !isUnit) property.isActive = true;
       } catch (uploadError) {
         console.error("Error uploading to R2:", uploadError);
         return res.status(500).json({
@@ -1758,7 +1928,7 @@ router.put(
       property.whatsIncluded = req.body.whatsIncluded;
     }
     if (location) property.location = location;
-    if (req.body.subcategory !== undefined) property.subcategory = req.body.subcategory;
+    if (req.body.subcategory !== undefined && !isUnit) property.subcategory = req.body.subcategory;
     if (coordinates) property.coordinates = coordinates;
 
     // Same fallback as create -- if the property still has no real
@@ -1766,7 +1936,7 @@ router.put(
     // edited without re-picking a Places suggestion, or coordinates were
     // never set to begin with), geocode its current address so it isn't
     // permanently missing from the search page map.
-    if (!property.coordinates?.latitude && !property.coordinates?.longitude) {
+    if (!isUnit && !property.coordinates?.latitude && !property.coordinates?.longitude) {
       const geocoded = await geocodeAddress(property.location || {});
       if (geocoded) property.coordinates = geocoded;
     }
@@ -1783,7 +1953,18 @@ router.put(
       property.markModified("features");
     }
     if (extras) property.extras = extras;
-    if (pricing) property.pricing = applyVatSettings(pricing, property.pricing?.vat?.toObject?.() || property.pricing?.vat);
+    if (pricing) {
+      // (toObject() is undefined when no VAT was ever saved; the empty vat
+      // document itself must not be carried over.)
+      const savedVat = property.pricing?.vat;
+      const nextPricing = applyVatSettings(pricing, savedVat?.toObject ? savedVat.toObject() : savedVat);
+      const pricingError = isUnit && roomPricingError(nextPricing);
+      if (pricingError) {
+        cleanupTempFiles([...(req.files?.images || []), ...(req.files?.video || [])]);
+        return res.status(400).json({ error: pricingError });
+      }
+      property.pricing = nextPricing;
+    }
     if (req.body.discounts) {
       try {
         const discounts = JSON.parse(req.body.discounts);
@@ -1795,7 +1976,8 @@ router.put(
     }
     if (bookingSettings) property.bookingSettings = bookingSettings;
     if (category) property.category = category;
-    if (req.body.unitsCount !== undefined) {
+    if (unitDetails) property.unitDetails = unitDetails;
+    if (req.body.unitsCount !== undefined && !isUnit) {
       property.unitsCount = parseInt(req.body.unitsCount, 10) || 1;
     }
     if (minBookingHours !== undefined) property.minBookingHours = minBookingHours;
@@ -1822,7 +2004,7 @@ router.put(
       property.listingTerms = String(req.body.listingTerms).trim();
     }
 
-    const leaseFiles = req.files?.leaseFile || [];
+    const leaseFiles = isUnit ? [] : req.files?.leaseFile || [];
     if (leaseFiles.length > 0) {
       try {
         const uploadedLeaseUrls = await uploadFilesToR2(leaseFiles);
@@ -1834,7 +2016,7 @@ router.put(
           details: uploadError.message,
         });
       }
-    } else if (req.body.existingLeaseAgreement !== undefined) {
+    } else if (req.body.existingLeaseAgreement !== undefined && !isUnit) {
       property.leaseAgreement = req.body.existingLeaseAgreement || null;
     }
 
@@ -1856,6 +2038,15 @@ router.put(
 
     const updatedProperty = await property.save();
 
+    // A building's rooms carry copies of its title, location and category (for
+    // booking emails, commission and the bookings checks) -- keep them in step.
+    if (property.listingType === "building") {
+      const building = property.toObject();
+      const shared = { parentBuildingTitle: building.title, location: building.location, coordinates: building.coordinates, category: building.category, subcategory: building.subcategory, categories: building.categories, subcategories: building.subcategories };
+      for (const key of Object.keys(shared)) if (shared[key] === undefined) delete shared[key];
+      await Property.updateMany({ parentBuilding: property._id, listingType: "unit" }, { $set: shared });
+    }
+
     // FIX: bust the cache after a successful update
     await client.del(`property:${req.params.id}`);
     if (property.slug) await client.del(`property:${property.slug}`);
@@ -1864,6 +2055,7 @@ router.put(
       success: true,
       message: "Property updated successfully",
       property: updatedProperty,
+      ...(isUnit && { unit: updatedProperty }),
     });
   } catch (err) {
     console.error("Error updating property:", err);
@@ -1873,7 +2065,8 @@ router.put(
     ]);
     res.status(500).json({ error: "Server error", details: err.message });
   }
-});
+};
+router.put("/:id", auth, listingUpload, updateListingHandler);
 
 // ✅ Publish / unpublish a property
 router.patch("/:id/status", auth, async (req, res) => {
@@ -2048,6 +2241,9 @@ router.post("/:id/duplicate", auth, async (req, res) => {
         error: "Unauthorized: You are not the host of this property",
       });
     }
+    if (original.listingType === "unit") {
+      return res.status(400).json({ error: "A room cannot be duplicated. Add a new room instead." });
+    }
 
     const duplicateData = original.toObject();
     delete duplicateData._id;
@@ -2150,23 +2346,9 @@ router.delete("/:id", auth, async (req, res) => {
       });
     }
 
-    if (property.images?.length > 0) {
-      try {
-        await deleteFilesFromR2(property.images);
-      } catch (deleteError) {
-        console.error("Error deleting images from R2:", deleteError);
-      }
-    }
-
-    await property.deleteOne();
-    // A building's units go with it, the same way (they have no photos).
-    if (property.listingType === "building") {
-      await Property.deleteMany({ parentBuilding: property._id, listingType: "unit" });
-    }
-
-    // FIX: bust cache before responding, and send email fire-and-forget
+    await removeListing(property);
+    // The URL may have named it by slug rather than id.
     await client.del(`property:${req.params.id}`);
-    if (property.slug) await client.del(`property:${property.slug}`);
 
     // FIX: send email before res.send() so a throw here doesn't crash silently
     const user = await User.findById(req.user.id);
@@ -2254,7 +2436,7 @@ router.delete("/:id/images", auth, async (req, res) => {
     // instead of blocking the deletion -- it comes back automatically the
     // next time the host uploads a photo via the PUT /:id save.
     const remaining = property.images.filter((img) => !imageUrls.includes(img));
-    const willBeEmpty = remaining.length === 0;
+    const willBeEmpty = remaining.length === 0 && property.listingType !== "unit";
     if (willBeEmpty) {
       property.isActive = false;
     }
