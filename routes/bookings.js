@@ -322,6 +322,13 @@ async function createBooking({
     if (diffHours < 1) {
       return res.status(400).json({ error: "Minimum 1 hour required" });
     }
+    const minBookingHours = Number(property.minBookingHours) || 0;
+    if (minBookingHours > 0 && diffHours < minBookingHours) {
+      return res.status(400).json({
+        error: `This space has a minimum booking of ${minBookingHours} hour${minBookingHours === 1 ? "" : "s"}`,
+        minBookingHours,
+      });
+    }
     if (hourlyPrice <= 0) {
       return res.status(400).json({ error: "Hourly price not configured for this space" });
     }
@@ -884,6 +891,82 @@ router.get("/:id", auth, async (req, res) => {
   } catch (err) {
     console.error("Fetch booking error:", err);
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+// The booking with its listing and the host's public name, for the guest's
+// confirmation page and calendar file. Only the booking's guest or host;
+// returns { booking } or { status, error }.
+async function participantBooking(id, userId) {
+  const booking = await Booking.findById(id)
+    .populate({ path: "property", select: "title slug coverImage location" })
+    .populate(publicHostPopulate(""));
+  if (!booking) return { status: 404, error: "Booking not found" };
+  const isParticipant = [booking.guest, booking.host?._id].some((p) => p?.toString() === userId);
+  if (!isParticipant) return { status: 403, error: "Not authorised to view this booking" };
+  return { booking };
+}
+
+const paymentStatus = (booking) => {
+  if (booking.refund?.processedAt) return "refunded";
+  if (booking.isPaid) return "paid";
+  if (booking.paymentAuthorizedAt) return "authorised";
+  return "unpaid";
+};
+
+// GET /bookings/:id/confirmation -- the guest's booking confirmation page.
+router.get("/:id/confirmation", auth, async (req, res) => {
+  try {
+    const { booking, status, error } = await participantBooking(req.params.id, req.user.id);
+    if (error) return res.status(status).json({ error });
+    const property = booking.property;
+    res.json({
+      _id: booking._id,
+      status: booking.status,
+      paymentStatus: paymentStatus(booking),
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      guests: booking.guests,
+      pricingUnit: booking.pricingUnit,
+      totalUnits: booking.totalUnits,
+      totalPrice: booking.totalPrice,
+      totalPence: booking.pricingBreakdown?.totalPence ?? null,
+      groupId: booking.groupId,
+      property: property && {
+        _id: property._id,
+        title: property.title,
+        slug: property.slug,
+        coverImage: property.coverImage,
+        location: property.location && {
+          address: property.location.address,
+          city: property.location.city,
+          country: property.location.country,
+        },
+      },
+      host: booking.host && { _id: booking.host._id, publicName: booking.host.publicName },
+      calendarUrl: `/bookings/${booking._id}/calendar.ics`,
+    });
+  } catch (err) {
+    console.error("Booking confirmation error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// GET /bookings/:id/calendar.ics -- "Add to calendar" for a confirmed booking.
+router.get("/:id/calendar.ics", auth, async (req, res) => {
+  try {
+    const { booking, status, error } = await participantBooking(req.params.id, req.user.id);
+    if (error) return res.status(status).json({ error });
+    if (!["confirmed", "completed"].includes(booking.status)) {
+      return res.status(409).json({ error: "The calendar file is available once the booking is confirmed" });
+    }
+    const reference = booking._id.toString().slice(-8).toUpperCase();
+    res.set("Content-Type", "text/calendar; charset=utf-8");
+    res.set("Content-Disposition", `attachment; filename="VenCome-Booking-${reference}.ics"`);
+    res.send(buildBookingICS(booking, booking.property));
+  } catch (err) {
+    console.error("Booking calendar error:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
