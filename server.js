@@ -187,7 +187,8 @@ const corsOptions = {
   origin: corsOriginCheck,
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  // X-Act-As-Host: an admin building a listing for a customer (middleware/actAsHost.js).
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "X-Act-As-Host"],
   exposedHeaders: ["Content-Range", "X-Content-Range"],
   maxAge: 86400, // 24 hours
 };
