@@ -979,6 +979,53 @@ router.get("/drafts/:id", async (req, res) => {
   }
 });
 
+// PUT /drafts/:id -- admin corrects a host's unpublished draft. Only the
+// fields below can change (everything else in the draft is kept as the host
+// saved it), photos must be http(s) URLs, and every change is audit-logged.
+// Nothing here publishes the draft; the host still finishes it in the wizard.
+const DRAFT_TEXT_FIELDS = { title: 150, description: 5000, address: 300, city: 100, postcode: 20 };
+router.put("/drafts/:id", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const changes = {};
+    for (const [key, max] of Object.entries(DRAFT_TEXT_FIELDS)) {
+      if (body[key] === undefined) continue;
+      if (typeof body[key] !== "string") return res.status(400).json({ error: `${key} must be text` });
+      const value = body[key].trim();
+      if (value.length > max) return res.status(400).json({ error: `${key} is too long (max ${max} characters)` });
+      if (key === "title" && !value) return res.status(400).json({ error: "title can't be empty" });
+      changes[key] = value;
+    }
+    if (body.capacity !== undefined) {
+      const capacity = Number(body.capacity);
+      if (!Number.isFinite(capacity) || capacity < 0 || capacity > 100000) return res.status(400).json({ error: "capacity must be a number from 0 to 100000" });
+      changes.capacity = Math.floor(capacity);
+    }
+    if (body.images !== undefined) {
+      const images = body.images;
+      if (!Array.isArray(images) || images.length > 30 || images.some((url) => typeof url !== "string" || url.length > 2000 || !/^https?:\/\//i.test(url))) {
+        return res.status(400).json({ error: "images must be a list of up to 30 http(s) photo links" });
+      }
+      changes.images = [...new Set(images)];
+    }
+    if (!Object.keys(changes).length) return res.status(400).json({ error: "Nothing to change" });
+
+    const draft = await Draft.findById(req.params.id);
+    if (!draft) return res.status(404).json({ error: "Draft not found" });
+
+    const formData = { ...(draft.formData || {}), ...changes };
+    const update = { formData };
+    if (changes.title !== undefined) update.title = changes.title;
+    if (changes.images !== undefined) update.coverImage = changes.images[0] || "";
+    const saved = await Draft.findByIdAndUpdate(req.params.id, update, { new: true });
+    console.log(`[Audit] Admin ${req.user?.id} edited draft ${draft._id} "${draft.title}" (host ${draft.host}): ${Object.keys(changes).join(", ")}`);
+    res.json({ draft: saved });
+  } catch (err) {
+    console.error("Admin draft edit error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 router.delete("/drafts/:id", async (req, res) => {
   const draft = await Draft.findByIdAndDelete(req.params.id);
   if (!draft) return res.status(404).json({ error: "Draft not found" });
