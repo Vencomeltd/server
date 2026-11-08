@@ -373,9 +373,12 @@ app.get("/sitemap.xml", async (req, res) => {
     const Property = require("./models/Property");
     const Category = require("./models/Category");
     const { publicListingFilter } = require("./utils/buildingListings");
+    const { roomSitemapEntries } = require("./utils/roomSitemap");
     const { loadLandingIndex } = require("./utils/landing");
-    const [properties, blogs, categories, landingIndex] = await Promise.all([
-      Property.find({ isActive: true, ...(await publicListingFilter()) }).select("_id slug updatedAt category categories").lean(),
+    const [properties, rooms, blogs, categories, landingIndex] = await Promise.all([
+      Property.find({ isActive: true, ...(await publicListingFilter()) }).select("_id slug updatedAt category categories listingType").lean(),
+      // Rooms of buildings: filtered against the public buildings below.
+      Property.find({ listingType: "unit", isActive: true, roomSlug: { $exists: true, $ne: "" } }).select("_id roomSlug parentBuilding updatedAt listingType isActive unitDetails.availability.status").lean(),
       require("./models/Blog").find({ status: "published" }).select("slug updatedAt").lean(),
       Category.find({ status: "published" }).select("_id slug updatedAt").lean(),
       // SEO landing pages (/uk, /uk/london, /uk/london/chairs, /chairs) --
@@ -411,6 +414,10 @@ app.get("/sitemap.xml", async (req, res) => {
       lastmod: p.updatedAt ? new Date(p.updatedAt).toISOString().split("T")[0] : undefined,
     }));
 
+    // Room pages (/property/<building>/<room>): only rooms whose building is in
+    // the public list above, so a hidden, deleted or empty building lists none.
+    const roomUrls = roomSitemapEntries({ buildings: properties, rooms, baseUrl });
+
     const blogUrls = blogs.map((b) => ({
       loc: `${baseUrl}/blog/${b.slug}`,
       priority: "0.7",
@@ -438,7 +445,7 @@ app.get("/sitemap.xml", async (req, res) => {
       .filter((p) => p.indexable)
       .map((p) => ({ loc: `${baseUrl}${p.path}`, priority: "0.7", changefreq: "weekly" }));
 
-    const allUrls = [...staticUrls, ...propertyUrls, ...blogUrls, ...categoryUrls, ...landingUrls];
+    const allUrls = [...staticUrls, ...propertyUrls, ...roomUrls, ...blogUrls, ...categoryUrls, ...landingUrls];
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
