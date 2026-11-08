@@ -4,6 +4,7 @@
 // record creation. A guest who never completes checkout, or whose card
 // fails, should never cause the host to be notified about a request that
 // isn't real yet.
+const { listingName } = require("./listingName");
 const createNotification = require("./notify");
 const sendEmail = require("./sendEmail");
 const sendSMS = require("./sendSMS");
@@ -140,7 +141,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
       userId: property.host?._id || property.host,
       type: "booking_request",
       title: "New Booking",
-      body: `${guestDisplayName} booked ${property.title}${dates.length > 1 ? ` (${dates.length} dates)` : ""}`,
+      body: `${guestDisplayName} booked ${listingName(property)}${dates.length > 1 ? ` (${dates.length} dates)` : ""}`,
       link: `/bookings/${booking._id}`,
       meta: { bookingId: booking._id },
     });
@@ -152,9 +153,9 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
       to: guestUser.email,
       ...(await renderEmail("booking_confirmation", {
         firstName: guestDisplayName,
-        spaceName: property.title || "your space",
+        spaceName: listingName(property) || "your space",
         details: detailsTable(`
-                  <tr><td style="padding: 6px 0; color: #666;">Property</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">${property.title || "—"}</td></tr>
+                  <tr><td style="padding: 6px 0; color: #666;">Property</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">${listingName(property) || "—"}</td></tr>
                   ${address ? `<tr><td style="padding: 6px 0; color: #666;">Full Address</td><td style="padding: 6px 0; text-align: right; font-weight: 600; color: #305CDE;">${address}</td></tr>` : ""}${dateRows(dates)}${openingHoursRows(dates, property.availability)}${breakdownRows(charged)}${leaseRows(dates)}
                   <tr><td style="padding: 6px 0; color: #666;">Guests</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">${booking.guests}</td></tr>
                   <tr><td style="padding: 8px 0; color: #0A1628; font-weight: 700; border-top: 1px solid #E5E7EB;">Total Paid</td><td style="padding: 8px 0; text-align: right; font-weight: 700; border-top: 1px solid #E5E7EB;">£${(totalPrice + (booking.deposit?.amount || 0)).toFixed(2)}</td></tr>`),
@@ -184,7 +185,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                 <table width="100%" cellpadding="0" cellspacing="0" style="font-size: 14px;">
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Property</td>
-                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">${property.title || "—"}</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">${listingName(property) || "—"}</td>
                   </tr>
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Location</td>
@@ -252,7 +253,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
   if (booking.status === "confirmed" && guestUser?.phoneNumber && guestUser?.isPhoneVerified) {
     sendSMS({
       to: guestUser.phoneNumber,
-      body: `VenCome: Your booking at "${property.title}" is confirmed! Check-in ${new Date(booking.checkIn).toLocaleDateString()}.`,
+      body: `VenCome: Your booking at "${listingName(property)}" is confirmed! Check-in ${new Date(booking.checkIn).toLocaleDateString()}.`,
     }).catch((err) => {
       if (err.code !== "SMS_NOT_CONFIGURED") console.error("Booking-confirmed SMS to guest failed:", err.message);
     });
@@ -264,9 +265,9 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
       ...(await renderEmail("booking_request", {
         firstName: hostDisplayName,
         guestName: guestDisplayName,
-        spaceName: property.title,
+        spaceName: listingName(property),
         details: detailsTable(`
-                  <tr><td style="padding: 6px 0; color: #666;">Property</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">${property.title}</td></tr>
+                  <tr><td style="padding: 6px 0; color: #666;">Property</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">${listingName(property)}</td></tr>
                   <tr><td style="padding: 6px 0; color: #666;">Guest</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">${guestDisplayName}</td></tr>${dateRows(dates)}${breakdownRows(charged)}${leaseRows(dates)}
                   <tr><td style="padding: 6px 0; color: #666;">Total</td><td style="padding: 6px 0; text-align: right; font-weight: 600;">£${totalPrice}</td></tr>`),
         actionButtons: booking.hostActionToken
@@ -281,7 +282,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
   } else if (hostUser?.email) {
     await sendEmail({
       to: hostUser.email,
-      subject: `New booking request for ${property.title}`,
+      subject: `New booking request for ${listingName(property)}`,
       html: `
         <div style="font-family: Arial, sans-serif; background-color: #f4f4f7; padding: 20px;">
           <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
@@ -303,7 +304,7 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
                 <table width="100%" cellpadding="0" cellspacing="0" style="font-size: 14px;">
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Property</td>
-                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">${property.title}</td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 600;">${listingName(property)}</td>
                   </tr>
                   <tr>
                     <td style="padding: 6px 0; color: #666;">Guest</td>
@@ -351,8 +352,8 @@ async function sendBookingCreatedNotifications(booking, property, guestUser, hos
       sendSMS({
         to: hostUser.phoneNumber,
         body: booking.status === "confirmed"
-          ? `VenCome: ${guestDisplayName} just instantly booked "${property.title}". Check your dashboard for details.`
-          : `VenCome: ${guestDisplayName} requested to book "${property.title}". Log in to approve or decline.`,
+          ? `VenCome: ${guestDisplayName} just instantly booked "${listingName(property)}". Check your dashboard for details.`
+          : `VenCome: ${guestDisplayName} requested to book "${listingName(property)}". Log in to approve or decline.`,
       }).catch((err) => {
         if (err.code !== "SMS_NOT_CONFIGURED") console.error("Booking-request SMS to host failed:", err.message);
       });
@@ -379,8 +380,8 @@ async function sendSeriesDecisionEmail(series, property, guestUser, status) {
         <p>Hi ${name},</p>
         <p>${
           confirmed
-            ? `Great news! The host has confirmed all ${series.length} dates of your booking for <strong>${property?.title || "your space"}</strong>.`
-            : `Unfortunately, the host was unable to confirm your ${series.length}-date booking request for <strong>${property?.title || "the space"}</strong>.`
+            ? `Great news! The host has confirmed all ${series.length} dates of your booking for <strong>${listingName(property) || "your space"}</strong>.`
+            : `Unfortunately, the host was unable to confirm your ${series.length}-date booking request for <strong>${listingName(property) || "the space"}</strong>.`
         }</p>
         <table style="width:100%;border-collapse:collapse;margin:20px 0;background:#F8F6F0;border-radius:8px;padding:16px;">
           ${confirmed && address ? `<tr><td style="padding:8px 0;color:#666;">Full Address</td><td style="padding:8px 0;text-align:right;font-weight:700;color:#305CDE;">${address}</td></tr>` : ""}

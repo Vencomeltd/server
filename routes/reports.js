@@ -1,3 +1,4 @@
+const { listingName } = require("../utils/listingName");
 const express = require("express");
 const Report = require("../models/Report");
 const Booking = require("../models/Booking");
@@ -28,7 +29,7 @@ router.post("/", auth, generalLimiter, async (req, res) => {
 
     let booking = null;
     if (type === "booking") {
-      booking = await Booking.findById(targetId).populate("property", "title host");
+      booking = await Booking.findById(targetId).populate("property", "title host listingType parentBuildingTitle");
       if (!booking) return res.status(404).json({ error: "Booking not found" });
 
       const property = booking.property?._id
@@ -50,12 +51,12 @@ router.post("/", auth, generalLimiter, async (req, res) => {
     if (type === "booking") {
       sendEmail({
         to: ADMIN_EMAILS,
-        subject: `⚠️ Self-reported booking dispute${booking?.property?.title ? `: ${booking.property.title}` : ""}`,
+        subject: `⚠️ Self-reported booking dispute${listingName(booking?.property) ? `: ${listingName(booking.property)}` : ""}`,
         html: `
           <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
             <img src="https://vencome.com/VenCome.jpg" alt="VenCome" style="height:40px;margin-bottom:24px;" />
             <h2 style="color:#0A1628;">⚠️ Self-Reported Booking Dispute</h2>
-            <p>${booking?.property?.title ? `A dispute was raised on <strong>${booking.property.title}</strong>.` : "A dispute was raised on a booking."}</p>
+            <p>${listingName(booking?.property) ? `A dispute was raised on <strong>${listingName(booking.property)}</strong>.` : "A dispute was raised on a booking."}</p>
             <table style="width:100%;border-collapse:collapse;margin:16px 0;">
               <tr><td style="padding:8px 0;color:#666;">Booking</td><td style="padding:8px 0;font-weight:700;">${booking._id}</td></tr>
               <tr><td style="padding:8px 0;color:#666;">Reported by</td><td style="padding:8px 0;font-weight:700;">${req.user.id}</td></tr>

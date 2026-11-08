@@ -2,7 +2,7 @@ const express = require("express");
 const Category = require("../models/Category");
 const Property = require("../models/Property"); // 👈 import Property model
 const { generateUniqueSlug } = require("../utils/slugify");
-const { NOT_UNIT, attachBuildingStats } = require("../utils/buildingListings");
+const { publicListingFilter, attachBuildingStats } = require("../utils/buildingListings");
 const router = express.Router();
 
 // ✅ Create a new category
@@ -52,6 +52,7 @@ router.get("/with-counts", async (req, res) => {
     // arbitrary insertion order, so the strip actually reflects supply.
     const hasManualOrder = categories.some((cat) => cat.order !== 0);
 
+    const publicFilter = await publicListingFilter();
     const categoriesWithCounts = await Promise.all(
       categories.map(async (cat) => {
         const count = await Property.countDocuments({
@@ -60,7 +61,7 @@ router.get("/with-counts", async (req, res) => {
             { categories: cat._id },
           ],
           isActive: true,
-          ...NOT_UNIT,
+          ...publicFilter,
         });
         return {
           _id: cat._id,
@@ -107,7 +108,7 @@ router.get("/:id", async (req, res) => {
     const properties = await Property.find({
       $or: [{ category: category._id }, { categories: category._id }],
       isActive: true,
-      ...NOT_UNIT,
+      ...(await publicListingFilter()),
     })
       .populate("host", "firstName lastName displayName profileImage")
       .populate("category", "name slug")

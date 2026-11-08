@@ -14,7 +14,9 @@ const listings = [
   { _id: 'synthetic-pending', host: hostId, isActive: false, moderationStatus: 'pending_review', reviews: [] },
   { _id: 'synthetic-unit', host: hostId, isActive: true, listingType: 'unit', reviews: [] },
 ];
-const matches = (doc, filter) => Object.entries(filter).every(([key, want]) => (want && typeof want === 'object' ? String(doc[key]) !== String(want.$ne) : String(doc[key]) === String(want)));
+// $nor hides buildings without rooms; no building here, so it matches everything.
+Property.distinct = async () => [];
+const matches = (doc, filter) => Object.entries(filter).every(([key, want]) => key === '$nor' || (want && typeof want === 'object' ? String(doc[key]) !== String(want.$ne) : String(doc[key]) === String(want)));
 const host = { _id: hostId, firstName: 'Synthetic', slug: 'synthetic-host', toObject() { const { toObject, ...rest } = this; return rest; } };
 User.findById = () => ({ select: async () => host });
 Property.countDocuments = async (filter) => listings.filter(doc => matches(doc, filter)).length;

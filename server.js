@@ -372,10 +372,10 @@ app.get("/sitemap.xml", async (req, res) => {
   try {
     const Property = require("./models/Property");
     const Category = require("./models/Category");
-    const { NOT_UNIT } = require("./utils/buildingListings");
+    const { publicListingFilter } = require("./utils/buildingListings");
     const { loadLandingIndex } = require("./utils/landing");
     const [properties, blogs, categories, landingIndex] = await Promise.all([
-      Property.find({ isActive: true, ...NOT_UNIT }).select("_id slug updatedAt category categories").lean(),
+      Property.find({ isActive: true, ...(await publicListingFilter()) }).select("_id slug updatedAt category categories").lean(),
       require("./models/Blog").find({ status: "published" }).select("slug updatedAt").lean(),
       Category.find({ status: "published" }).select("_id slug updatedAt").lean(),
       // SEO landing pages (/uk, /uk/london, /uk/london/chairs, /chairs) --

@@ -1,3 +1,4 @@
+const { listingName } = require("./listingName");
 const cron = require("node-cron");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const Booking = require("../models/Booking");
@@ -27,7 +28,7 @@ module.exports = function setupBookingExpiry() {
         // guest a "you were not charged" email that could be false.
         paymentAuthorizedAt: { $exists: true },
       })
-        .populate("property", "title")
+        .populate("property", "title listingType parentBuildingTitle")
         .populate("guest", "email firstName displayName");
 
       for (const booking of staleBookings) {
@@ -66,7 +67,7 @@ module.exports = function setupBookingExpiry() {
                     <div style="padding: 30px; color: #333;">
                       <h2 style="color: #305CDE; text-align: center; margin-top: 0;">Booking Request Expired</h2>
                       <p>Hi <strong>${guestName}</strong>,</p>
-                      <p>The host didn't respond to your booking request for <strong>${booking.property?.title || "the space"}</strong> within 24 hours, so it has expired.</p>
+                      <p>The host didn't respond to your booking request for <strong>${listingName(booking.property) || "the space"}</strong> within 24 hours, so it has expired.</p>
                       <p>You have not been charged — no payment was captured.</p>
                       <div style="text-align: center; margin: 30px 0;">
                         <a href="https://www.vencome.com/search" style="display: inline-block; background-color: #0A1628; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px;">Find Another Space</a>

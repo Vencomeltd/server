@@ -15,6 +15,14 @@ const Report = require("../models/Report");
 const SupportTicket = require("../models/SupportTicket");
 const { geocodeAddress } = require("../utils/geocode");
 const { NOT_UNIT } = require("../utils/buildingListings");
+const { listingName } = require("../utils/listingName");
+
+// A booking or listing as the admin tables show it: a room is "<room> (<building>)".
+const withDisplayTitle = (doc) => {
+  const plain = doc.toObject ? doc.toObject() : doc;
+  if (plain.property?.title) plain.property.displayTitle = listingName(plain.property, "admin");
+  return plain;
+};
 const Payment = require("../models/Payment");
 const Payout = require("../models/Payout");
 const Review = require("../models/Review");
@@ -757,12 +765,12 @@ router.get("/reports", async (req, res) => {
       try {
         if (report.type === "booking") {
           const booking = await Booking.findById(report.targetId)
-            .populate("property", "title")
+            .populate("property", "title listingType parentBuildingTitle")
             .populate("guest", "firstName lastName displayName")
             .populate("host", "firstName lastName displayName");
           if (booking) {
             obj.target = {
-              label: booking.property?.title || "Booking",
+              label: listingName(booking.property, "admin") || "Booking",
               amount: booking.totalPrice,
               customer: booking.guest?.displayName || `${booking.guest?.firstName || ""} ${booking.guest?.lastName || ""}`.trim(),
               host: booking.host?.displayName || `${booking.host?.firstName || ""} ${booking.host?.lastName || ""}`.trim(),
@@ -931,7 +939,7 @@ router.get("/properties", async (req, res) => {
     Property.countDocuments(filter),
     Property.distinct("location.city", excludeTest === "true" ? { host: filter.host } : {}),
   ]);
-  res.json({ properties, total, locations: locations.filter(Boolean).sort(), page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
+  res.json({ properties: properties.map((p) => ({ ...(p.toObject ? p.toObject() : p), displayTitle: listingName(p, "admin") })), total, locations: locations.filter(Boolean).sort(), page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
 });
 
 // Lists saved-but-unpublished listing drafts across all hosts, oldest
@@ -1221,7 +1229,7 @@ router.patch("/properties/:id", async (req, res) => {
 router.get("/payouts/pending", async (req, res) => {
   const bookings = await Booking.find({ isPaid: true, escrowReleased: false, status: "completed" })
     .populate("host", "firstName lastName email stripeAccountId")
-    .populate("property", "title")
+    .populate("property", "title listingType parentBuildingTitle")
     .sort({ checkOut: 1 });
   res.json(bookings);
 });
@@ -1245,7 +1253,7 @@ router.get("/bookings", async (req, res) => {
 
     const [bookings, total] = await Promise.all([
       Booking.find(query)
-        .populate("property", "title location coverImage")
+        .populate("property", "title location coverImage listingType parentBuildingTitle")
         .populate("guest", "firstName lastName displayName email")
         .populate("host", "firstName lastName displayName email")
         .sort({ createdAt: -1 })
@@ -1254,7 +1262,7 @@ router.get("/bookings", async (req, res) => {
       Booking.countDocuments(query),
     ]);
 
-    res.json({ success: true, bookings, total, page, totalPages: Math.ceil(total / limit) });
+    res.json({ success: true, bookings: bookings.map(withDisplayTitle), total, page, totalPages: Math.ceil(total / limit) });
   } catch (err) {
     console.error("Admin bookings error:", err);
     res.status(500).json({ error: "Server error" });
@@ -1272,13 +1280,13 @@ router.get("/bookings/deposit-claims", async (req, res) => {
       : { "deposit.status": { $in: ["claimed", "partially_claimed"] } };
 
     const bookings = await Booking.find(query)
-      .populate("property", "title coverImage")
+      .populate("property", "title coverImage listingType parentBuildingTitle")
       .populate("guest", "firstName lastName displayName email")
       .populate("host", "firstName lastName displayName email")
       .sort({ "deposit.claim.filedAt": -1 })
       .limit(100);
 
-    res.json({ success: true, bookings });
+    res.json({ success: true, bookings: bookings.map(withDisplayTitle) });
   } catch (err) {
     console.error("Admin deposit claims error:", err);
     res.status(500).json({ error: "Server error" });
@@ -1325,7 +1333,7 @@ router.get("/payments", async (req, res) => {
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
     const bookings = await Booking.find({ isPaid: true, createdAt: { $gte: since } })
-      .populate("property", "title location")
+      .populate("property", "title location listingType parentBuildingTitle")
       .populate("guest", "firstName lastName displayName email")
       .populate("host", "firstName lastName displayName email")
       .sort({ createdAt: -1 })
@@ -1348,7 +1356,7 @@ router.get("/payments", async (req, res) => {
         bookingRef: b._id.toString().slice(-8).toUpperCase(),
         customer: b.guest?.displayName || [b.guest?.firstName, b.guest?.lastName].filter(Boolean).join(" ") || b.guest?.email || "—",
         host: b.host?.displayName || [b.host?.firstName, b.host?.lastName].filter(Boolean).join(" ") || b.host?.email || "—",
-        space: b.property?.title || "—",
+        space: listingName(b.property, "admin") || "—",
         amount: b.totalPrice || 0,
         commission: b.platformFee || 0,
         hostPayout: b.hostAmount || 0,
@@ -1891,7 +1899,7 @@ router.get("/invoices", async (req, res) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     let bookings = await Booking.find(filter)
-      .populate("property", "title location")
+      .populate("property", "title location listingType parentBuildingTitle")
       .populate("guest", "firstName lastName displayName email")
       .populate("host", "firstName lastName displayName email")
       .sort({ createdAt: -1 });
@@ -1906,7 +1914,7 @@ router.get("/invoices", async (req, res) => {
           invoiceNumber.toLowerCase().includes(needle) ||
           guestName.toLowerCase().includes(needle) ||
           hostName.toLowerCase().includes(needle) ||
-          (b.property?.title || "").toLowerCase().includes(needle)
+          (listingName(b.property, "admin") || "").toLowerCase().includes(needle)
         );
       });
     }
@@ -1920,7 +1928,7 @@ router.get("/invoices", async (req, res) => {
       issuedAt: b.createdAt,
       guestName: b.guest?.displayName || `${b.guest?.firstName || ""} ${b.guest?.lastName || ""}`.trim() || b.guest?.email,
       hostName: b.host?.displayName || `${b.host?.firstName || ""} ${b.host?.lastName || ""}`.trim() || b.host?.email,
-      propertyTitle: b.property?.title || "Deleted listing",
+      propertyTitle: listingName(b.property, "admin") || "Deleted listing",
       amount: b.totalPrice,
       status: b.status === "cancelled" ? "refunded" : "paid",
     }));
@@ -1984,7 +1992,7 @@ router.post("/invoices/:bookingId/resend", async (req, res) => {
           <img src="https://vencome.com/VenCome.jpg" alt="VenCome" style="height:40px;margin-bottom:24px;" />
           <h2 style="color:#0A1628;">Your invoice, resent</h2>
           <p>Hi ${guest.displayName || guest.firstName || "there"},</p>
-          <p>Attached is your invoice <strong>${invoiceNumber}</strong> for ${booking.property?.title || "your booking"}.</p>
+          <p>Attached is your invoice <strong>${invoiceNumber}</strong> for ${listingName(booking.property) || "your booking"}.</p>
           <p style="color:#6B7280;font-size:13px;margin-top:24px;">The VenCome Team</p>
         </div>
       `,

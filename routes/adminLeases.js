@@ -2,6 +2,7 @@
 // mounted at /api/admin/leases. Lists leases, and handles a month whose
 // payment kept failing: retry it, or end the lease. Every action is written to
 // the lease's audit trail (on its first month).
+const { listingName } = require("../utils/listingName");
 const express = require("express");
 const { body, param, query, validationResult } = require("express-validator");
 const { adminAuth, requireAdminRole } = require("../middleware/auth");
@@ -35,7 +36,7 @@ router.get("/", [query("attention").optional().isIn(["0", "1"])], validate, asyn
       filter.groupId = { $in: await Booking.distinct("groupId", { "lease.chargeStatus": { $in: NEEDS_ATTENTION } }) };
     }
     const firsts = await Booking.find({ ...filter, "lease.index": 1 })
-      .populate("property", "title")
+      .populate("property", "title listingType parentBuildingTitle")
       .populate("guest", "firstName lastName displayName email")
       .populate("host", "firstName lastName displayName email")
       .populate("lease.audit.by", "firstName lastName email")
@@ -98,7 +99,7 @@ router.post(
   validate,
   async (req, res) => {
     try {
-      const first = await Booking.findOne({ groupId: req.params.groupId, "lease.index": 1 }).populate("property", "title");
+      const first = await Booking.findOne({ groupId: req.params.groupId, "lease.index": 1 }).populate("property", "title listingType parentBuildingTitle");
       if (!first) return res.status(404).json({ error: "Lease not found" });
 
       const cancelled = await endLease(req.params.groupId);
@@ -108,7 +109,7 @@ router.post(
         User.findById(first.guest).select("email firstName displayName"),
         User.findById(first.host).select("email firstName displayName"),
       ]);
-      const title = first.property?.title || "the space";
+      const title = listingName(first.property) || "the space";
       for (const user of [guest, host]) {
         if (!user?.email) continue;
         sendEmail({

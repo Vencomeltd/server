@@ -1,3 +1,4 @@
+const { listingName } = require("../utils/listingName");
 const express = require("express");
 const router = express.Router();
 const auth = require("../middleware/auth");
@@ -22,7 +23,7 @@ router.get("/", auth, async (req, res) => {
     // not released yet", not that the booking itself is still awaiting
     // approval.
     const bookings = await Booking.find({ host: req.user.id, isPaid: true })
-      .populate("property", "title")
+      .populate("property", "title listingType parentBuildingTitle")
       .select("property checkIn checkOut totalPrice hostAmount escrowReleased status")
       .sort({ checkOut: -1 })
       .limit(50);
@@ -35,7 +36,7 @@ router.get("/", auth, async (req, res) => {
       transactions,
       bookings: bookings.map((b) => ({
         _id: b._id,
-        propertyTitle: b.property?.title || "—",
+        propertyTitle: listingName(b.property) || "—",
         checkIn: b.checkIn,
         checkOut: b.checkOut,
         amount: b.hostAmount,

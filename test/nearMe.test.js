@@ -57,13 +57,15 @@ const evaluate = (expr, doc) => {
   assert.ok(ops[op], `unsupported operator ${op}`);
   return ops[op]();
 };
+// No building here, so the $nor that hides empty buildings matches everything.
+Property.distinct = async () => [];
 let pipelines = [];
 Property.aggregate = async (pipeline) => {
   pipelines.push(pipeline);
   let docs = listings;
   for (const stage of pipeline) {
     const [name, spec] = Object.entries(stage)[0];
-    if (name === "$match") docs = docs.filter((d) => Object.entries(spec).every(([k, v]) => (v && typeof v === "object" ? get(d, k) !== v.$ne : get(d, k) === v)));
+    if (name === "$match") docs = docs.filter((d) => Object.entries(spec).every(([k, v]) => k === "$nor" || (v && typeof v === "object" ? get(d, k) !== v.$ne : get(d, k) === v)));
     else if (name === "$project") docs = docs.map((d) => ({ _id: d._id, ...Object.fromEntries(Object.entries(spec).map(([k, e]) => [k, evaluate(e, d)])) }));
     else if (name === "$addFields") docs = docs.map((d) => ({ ...d, ...Object.fromEntries(Object.entries(spec).map(([k, e]) => [k, evaluate(e, d)])) }));
     else if (name === "$sort") docs = [...docs].sort((a, b) => {
@@ -134,7 +136,7 @@ test("the database does the sorting and limiting", async () => {
   await nearMe();
   const stages = pipelines[0].map((s) => Object.keys(s)[0]);
   assert.deepEqual(stages.slice(-2), ["$sort", "$limit"]);
-  assert.deepEqual(pipelines[0][0], { $match: { isActive: true, listingType: { $ne: "unit" } } });
+  assert.deepEqual(pipelines[0][0], { $match: { isActive: true, listingType: { $ne: "unit" }, $nor: [{ listingType: "building", _id: { $nin: [] } }] } });
 });
 
 test("falls back to an unsorted list when the visitor can't be located", async () => {
