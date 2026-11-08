@@ -1406,9 +1406,9 @@ router.post("/:id/quick-action", express.urlencoded({ extended: false }), async 
 // both the old host-selectable moderate/strict/flexible/non-refundable tiers
 // and the earlier "Aug 8" 72h/120h version. Property.bookingSettings.refundPolicy
 // is no longer read here):
-//   >48h before check-in: 100% refund
-//   24h-48h before check-in: 75% refund (host keeps 25%)
-//   <24h before check-in: 50% refund (host keeps 50%)
+//   48h or more before check-in: 100% refund
+//   24h to under 48h before check-in: 75% refund (host keeps 25%)
+//   under 24h before check-in (the booking day): 0% refund (host keeps 100%)
 // `policy` param kept (unused) so call sites don't need to change.
 function getRefundPolicy(policy, checkIn) {
   const now = new Date();

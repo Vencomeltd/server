@@ -22,11 +22,12 @@ const PAYMENTS_CONFIG = Object.freeze({
   leaseMaxMonths: 36,
   leaseLowCommissionMonths: 12, // a monthly booking or lease this long pays the annual rate
   // Cancellation refund tiers, checked top to bottom against hours until
-  // check-in. `exclusive` means strictly more than minHours.
+  // check-in. `exclusive` means strictly more than minHours (none are, now:
+  // exactly 48h is a full refund, exactly 24h is 75%).
   cancellationTiers: Object.freeze([
-    { minHours: 48, exclusive: true, refundPercent: 100, reason: "Cancelled more than 48 hours before check-in — full refund" },
-    { minHours: 24, exclusive: false, refundPercent: 75, reason: "Cancelled 24-48 hours before check-in — 75% refund" },
-    { minHours: -Infinity, exclusive: false, refundPercent: 50, reason: "Cancelled within 24 hours of check-in — 50% refund" },
+    { minHours: 48, exclusive: false, refundPercent: 100, reason: "Cancelled 48 hours or more before check-in — full refund" },
+    { minHours: 24, exclusive: false, refundPercent: 75, reason: "Cancelled 24 to 48 hours before check-in — 75% refund" },
+    { minHours: -Infinity, exclusive: false, refundPercent: 0, reason: "Cancelled less than 24 hours before check-in — no refund" },
   ]),
 });
 
