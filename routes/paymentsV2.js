@@ -1,5 +1,6 @@
 // Payments v2 booking routes (spec Phases 2, 4 and 5), mounted under
 // /api/bookings. Everything here is inert unless PAYMENTS_V2=true.
+const { listingName } = require("../utils/listingName");
 const express = require("express");
 const { body, param, validationResult } = require("express-validator");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
@@ -104,7 +105,7 @@ router.post("/:bookingId/payment-intent", auth, [bookingIdParam], validate, asyn
         // Saves the card so the deposit can be held/charged later.
         ...(saveCard && { setup_future_usage: "off_session" }),
         transfer_group: `booking_${booking._id}`,
-        description: `Booking ${booking._id} — ${booking.property?.title || "VenCome space"}`,
+        description: `Booking ${booking._id} — ${listingName(booking.property) || "VenCome space"}`,
         metadata: { bookingId: booking._id.toString(), type: "booking" },
         // A deposit hold can only be placed on a card (Apple/Google Pay are cards
         // too), so listings with a deposit accept cards only; otherwise Stripe
@@ -149,7 +150,7 @@ router.post(
     try {
       const bookings = await Booking.find({ groupId, guest: req.user.id })
         .sort({ checkIn: 1 })
-        .populate("property", "title depositPolicy");
+        .populate("property", "title depositPolicy listingType parentBuildingTitle");
       if (!bookings.length) return res.status(404).json({ error: "Booking not found" });
       if (bookings.some((b) => b.isPaid || b.paymentAuthorizedAt)) {
         return res.status(400).json({ error: "This series has already been paid for" });
@@ -217,8 +218,8 @@ router.post(
           ...(saveCard && { setup_future_usage: "off_session" }),
           transfer_group: lease ? `booking_${first._id}` : `series_${groupId}`,
           description: lease
-            ? `Lease ${groupId} — ${first.property?.title || "VenCome space"} (month 1 of ${lease.months})`
-            : `Series ${groupId} — ${first.property?.title || "VenCome space"} (${bookings.length} dates)`,
+            ? `Lease ${groupId} — ${listingName(first.property) || "VenCome space"} (month 1 of ${lease.months})`
+            : `Series ${groupId} — ${listingName(first.property) || "VenCome space"} (${bookings.length} dates)`,
           // bookingId is the first date; the webhook applies it to the whole series.
           metadata: { bookingId: first._id.toString(), groupId, type: lease ? "lease" : "booking_group" },
           ...(saveCard

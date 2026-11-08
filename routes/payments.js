@@ -1,3 +1,4 @@
+const { listingName } = require("../utils/listingName");
 const express = require("express");
 require("dotenv").config({ path: "config.env" });
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
@@ -16,7 +17,7 @@ router.post("/create-checkout-session", auth, async (req, res) => {
     const booking = await Booking.findOne({
       _id: bookingId,
       guest: req.user.id,
-    }).populate("property", "title coverImage");
+    }).populate("property", "title coverImage listingType parentBuildingTitle");
 
     if (!booking) {
       return res.status(400).json({ error: "Booking not found" });
@@ -56,7 +57,7 @@ router.post("/create-checkout-session", auth, async (req, res) => {
           price_data: {
             currency: "gbp",
             product_data: {
-              name: booking.property.title,
+              name: listingName(booking.property),
               images: imageUrl ? [imageUrl] : undefined,
             },
             unit_amount: Math.round(booking.totalPrice * 100),
@@ -219,7 +220,7 @@ router.get("/payment-history", auth, async (req, res) => {
         path: "booking",
         populate: {
           path: "property",
-          select: "title images",
+          select: "title images listingType parentBuildingTitle",
         },
       })
       .sort({ createdAt: -1 })

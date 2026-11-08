@@ -1,6 +1,7 @@
 // Email/SMS notifications for the payments v2 deposit, claim and payout flow
 // (spec Phase 9). Every function is best-effort: a failed email or SMS is
 // logged and never throws, so it can't break a payment or scheduler step.
+const { listingName } = require("../listingName");
 const sendEmail = require("../sendEmail");
 const sendSMS = require("../sendSMS");
 const User = require("../../models/User");
@@ -35,9 +36,9 @@ async function loadParties(booking) {
   const [guest, host, property] = await Promise.all([
     User.findById(booking.guest).select("email firstName displayName phoneNumber isPhoneVerified"),
     User.findById(booking.host).select("email firstName displayName phoneNumber isPhoneVerified"),
-    Property.findById(booking.property).select("title"),
+    Property.findById(booking.property).select("title listingType parentBuildingTitle"),
   ]);
-  return { guest, host, title: property?.title || "the space" };
+  return { guest, host, title: listingName(property) || "the space" };
 }
 
 const email = (to, subject, html) => {

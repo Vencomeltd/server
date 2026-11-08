@@ -119,7 +119,7 @@ test('listing search matches the host email', async () => {
 test('a building is one listing: units are left out of counts and lists unless asked for by parentBuilding', async () => {
   listings.push(
     { _id: 'synthetic-building', title: 'Synthetic building', host: 'synthetic-host', isActive: true, listingType: 'building' },
-    { _id: 'synthetic-unit-a', title: 'Unit A', host: 'synthetic-host', isActive: true, listingType: 'unit', parentBuilding: 'synthetic-building' },
+    { _id: 'synthetic-unit-a', title: 'Unit A', host: 'synthetic-host', isActive: true, listingType: 'unit', parentBuilding: 'synthetic-building', parentBuildingTitle: 'Synthetic building' },
     { _id: 'synthetic-unit-b', title: 'Unit B', host: 'synthetic-host', isActive: false, moderationStatus: 'approved', listingType: 'unit', parentBuilding: 'synthetic-building' },
   );
   try {
@@ -134,5 +134,8 @@ test('a building is one listing: units are left out of counts and lists unless a
     const { body: units } = await get('/properties?parentBuilding=synthetic-building');
     assert.deepEqual(units.properties.map(doc => doc._id), ['synthetic-unit-a', 'synthetic-unit-b']);
     assert.equal(units.total, 2);
+    // a room is shown as "<room> (<building>)"; everything else keeps its title
+    assert.deepEqual(units.properties.map(doc => doc.displayTitle), ['Unit A (Synthetic building)', 'Unit B']);
+    assert.equal(all.properties.find(doc => doc._id === 'synthetic-building').displayTitle, 'Synthetic building');
   } finally { listings.splice(listings.length - 3); }
 });

@@ -1,3 +1,4 @@
+const { listingName } = require("./listingName");
 const PDFDocument = require("pdfkit");
 const path = require("path");
 const { hostPublicName } = require("./hostName");
@@ -51,7 +52,7 @@ async function generateInvoicePDF(booking, property, guest, host) {
     const parties = [
       ["FROM", COMPANY.name, `Company no. ${COMPANY.number}\n${COMPANY.address}\n${COMPANY.email}`],
       ["BILLED TO (CUSTOMER)", name(guest), [guest.businessVerification?.companyName, guest.email].filter(Boolean).join("\n")],
-      ["HOST", hostPublicName(host), [property.title, address].filter(Boolean).join("\n")],
+      ["HOST", hostPublicName(host), [listingName(property), address].filter(Boolean).join("\n")],
     ];
     const columnWidth = (width - 48) / 3;
     const partyHeight = Math.max(...parties.map(([, title, body]) => {
@@ -76,7 +77,7 @@ async function generateInvoicePDF(booking, property, guest, host) {
     const vat = bd?.totalPence ? bd.vatPence || 0 : 0;
     const quantity = booking.totalUnits || booking.totalNights || booking.totalHours || 1;
     let y = 177 + partyHeight + 19;
-    y = put(`Booking: ${property.title || "Commercial Space"} · ${date(booking.checkIn)} – ${date(booking.checkOut)}`, left, y, width, 9) + 17;
+    y = put(`Booking: ${listingName(property) || "Commercial Space"} · ${date(booking.checkIn)} – ${date(booking.checkOut)}`, left, y, width, 9) + 17;
     put("DESCRIPTION", left + 6, y, 245, 8, "Helvetica-Bold");
     put("QTY", 306, y, 35, 8, "Helvetica-Bold", GREY, "right");
     put("RATE", 351, y, 78, 8, "Helvetica-Bold", GREY, "right");

@@ -1,3 +1,4 @@
+const { listingName } = require("../utils/listingName");
 const express = require("express");
 const { generateInvoicePDF } = require("../utils/generateInvoice");
 const { publicHost, publicHostPopulate, HOST_NAME_FIELDS } = require("../utils/hostName");
@@ -56,9 +57,9 @@ async function pushBookingToHostCalendars(booking, property) {
     if (!hostUser) return;
 
     const eventPayload = {
-      summary: `VenCome booking — ${property.title}`,
+      summary: `VenCome booking — ${listingName(property)}`,
       description: `Booking ref ${booking._id.toString().slice(-8).toUpperCase()} via VenCome.`,
-      location: property.location?.address || property.title,
+      location: property.location?.address || listingName(property),
       start: booking.checkIn,
       end: booking.checkOut,
     };
@@ -120,10 +121,21 @@ const uploadPdf = multer({
   },
 });
 
-// Building listings and their units are enquiry-only: guests message the
-// host instead (POST /messages/enquiry), nothing is booked or paid here.
-const ENQUIRY_ONLY_TYPES = ["building", "unit"];
+// A building is enquiry-only: guests message the host instead (POST
+// /messages/enquiry). Its rooms (units) are booked like any listing, while
+// they are active, not let, and in an active building.
+const ENQUIRY_ONLY_TYPES = ["building"];
 const ENQUIRY_ONLY_ERROR = "This listing is enquiry-only. Please send the host a message instead.";
+
+// Why a room cannot be booked right now, or null. (Rooms are never booked once
+// let, deactivated or deleted, nor when their building is.)
+async function roomNotBookableReason(room) {
+  if (!room.isActive) return "This room is not available to book.";
+  if (room.unitDetails?.availability?.status === "let") return "This room has been let and is not available to book.";
+  const building = await Property.findById(room.parentBuilding).select("isActive");
+  if (!building || !building.isActive) return "This room is not available to book.";
+  return null;
+}
 
 // Validates, prices and saves one booking. Returns { status, body }: body is
 // the saved booking on success, or { error }. POST / and POST /group share
@@ -157,6 +169,10 @@ async function createBooking({
   }
   if (ENQUIRY_ONLY_TYPES.includes(property.listingType)) {
     return res.status(400).json({ error: ENQUIRY_ONLY_ERROR });
+  }
+  if (property.listingType === "unit") {
+    const reason = await roomNotBookableReason(property);
+    if (reason) return res.status(400).json({ error: reason });
   }
 
   // 2. Parse and validate dates
@@ -832,7 +848,7 @@ router.post("/lease", auth, async (req, res) => {
 router.get("/host", auth, async (req, res) => {
   try {
     const bookings = await Booking.find({ host: req.user.id })
-      .populate("property", "title coverImage")
+      .populate("property", "title coverImage listingType parentBuildingTitle")
       .populate("guest", "firstName lastName displayName profileImage")
       .sort({ createdAt: -1 });
     res.json(bookings);
@@ -845,7 +861,7 @@ router.get("/host", auth, async (req, res) => {
 router.get("/", auth, async (req, res) => {
   try {
     const bookings = await Booking.find({ guest: req.user.id })
-      .populate("property", "title coverImage")
+      .populate("property", "title coverImage listingType parentBuildingTitle")
       .populate(publicHostPopulate("firstName lastName displayName profileImage"))
       .sort({ createdAt: -1 });
     res.json(bookings);
@@ -860,7 +876,7 @@ router.get("/past", auth, async (req, res) => {
   //   checkOut: { $gt: new Date() },
   // })
   const bookings = await Booking.find({ guest: req.user._id })
-    .populate("property", "title images coverImage location pricing")
+    .populate("property", "title images coverImage location pricing listingType parentBuildingTitle")
     .sort({ checkOut: -1 });
 
   res.json(bookings);
@@ -911,7 +927,7 @@ router.get("/:id", auth, async (req, res) => {
 // returns { booking } or { status, error }.
 async function participantBooking(id, userId) {
   const booking = await Booking.findById(id)
-    .populate({ path: "property", select: "title slug coverImage location" })
+    .populate({ path: "property", select: "title slug coverImage location listingType parentBuildingTitle" })
     .populate(publicHostPopulate(""));
   if (!booking) return { status: 404, error: "Booking not found" };
   const isParticipant = [booking.guest, booking.host?._id].some((p) => p?.toString() === userId);
@@ -946,7 +962,7 @@ router.get("/:id/confirmation", auth, async (req, res) => {
       groupId: booking.groupId,
       property: property && {
         _id: property._id,
-        title: property.title,
+        title: listingName(property),
         slug: property.slug,
         coverImage: property.coverImage,
         location: property.location && {
@@ -1002,7 +1018,7 @@ function buildBookingICS(booking, property) {
     `DTSTAMP:${toICSDate(new Date())}`,
     `DTSTART:${toICSDate(booking.checkIn)}`,
     `DTEND:${toICSDate(booking.checkOut)}`,
-    `SUMMARY:${escapeText(property?.title ? `VenCome: ${property.title}` : "VenCome Booking")}`,
+    `SUMMARY:${escapeText(listingName(property) ? `VenCome: ${listingName(property)}` : "VenCome Booking")}`,
     address ? `LOCATION:${escapeText(address)}` : null,
     `DESCRIPTION:${escapeText(`Your confirmed booking on VenCome. View details: https://www.vencome.com/customer/bookings`)}`,
     "END:VEVENT",
@@ -1231,7 +1247,7 @@ async function applyDecision(booking, status, io) {
   }
 
   const [property, guestUser] = await Promise.all([
-    Property.findById(booking.property?._id || booking.property).select("title location availability"),
+    Property.findById(booking.property?._id || booking.property).select("title location availability listingType parentBuildingTitle"),
     User.findById(booking.guest?._id || booking.guest).select("email firstName displayName"),
   ]);
   sendSeriesDecisionEmail(series, property, guestUser, status).catch((err) =>
@@ -1332,7 +1348,7 @@ router.get("/:id/quick-action", async (req, res) => {
     res.send(quickActionPage({
       title: `${label} this booking?`,
       body: `
-        <p>${booking.property?.title || "This space"}<br>
+        <p>${listingName(booking.property) || "This space"}<br>
         ${new Date(booking.checkIn).toLocaleDateString()} – ${new Date(booking.checkOut).toLocaleDateString()}</p>
         <form method="POST" action="/api/bookings/${booking._id}/quick-action">
           <input type="hidden" name="token" value="${token}">
@@ -1718,7 +1734,7 @@ router.delete("/:id/cancel", auth, async (req, res) => {
         User.findById(booking.guest).select("email firstName displayName"),
         User.findById(booking.host).select("email firstName displayName"),
       ]);
-      const title = booking.property?.title || "the space";
+      const title = listingName(booking.property) || "the space";
       const when = new Date(booking.checkIn).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
       const nameOf = (u) => u?.displayName || u?.firstName || "there";
       const refundLine =
@@ -2098,7 +2114,7 @@ router.put("/sign-lease/:id", auth, async (req, res) => {
       const hostUser = property.host;
       sendEmail({
         to: hostUser.email,
-        subject: `Guest signed lease agreement for ${property.title}`,
+        subject: `Guest signed lease agreement for ${listingName(property)}`,
         html: `
           <div style="font-family: 'Manrope', Arial, sans-serif; background-color: #f4f4f7; padding: 20px;">
             <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
@@ -2111,7 +2127,7 @@ router.put("/sign-lease/:id", auth, async (req, res) => {
                 <p><strong>${guest.firstName} ${
           guest.lastName
         }</strong> has signed the lease agreement for <strong>${
-          property.title
+          listingName(property)
         }</strong>.</p>
                 <div style="background-color: #f5f7ff; padding: 20px; margin: 25px 0; border-radius: 8px;">
                   <table width="100%" cellpadding="0" cellspacing="0" style="font-size: 14px;">
@@ -2124,7 +2140,7 @@ router.put("/sign-lease/:id", auth, async (req, res) => {
                     <tr>
                       <td style="padding: 6px 0; color: #666;">Property</td>
                       <td style="padding: 6px 0; text-align: right; font-weight: 600;">${
-                        property.title
+                        listingName(property)
                       }</td>
                     </tr>
                     <tr>

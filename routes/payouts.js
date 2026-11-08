@@ -315,7 +315,7 @@ router.get("/payout-history", auth, async (req, res) => {
         path: "booking",
         populate: {
           path: "property",
-          select: "title images",
+          select: "title images listingType parentBuildingTitle",
         },
       })
       .sort({ createdAt: -1 })

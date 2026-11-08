@@ -1,3 +1,4 @@
+const { listingName } = require("../utils/listingName");
 const express = require("express");
 const router = express.Router();
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
@@ -42,7 +43,7 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
       const bookingId = session.metadata?.bookingId;
       if (!bookingId) return res.json({ received: true });
 
-      const booking = await Booking.findById(bookingId).populate("property", "title host location");
+      const booking = await Booking.findById(bookingId).populate("property", "title host location listingType parentBuildingTitle");
       if (!booking || booking.isPaid) return res.json({ received: true });
       if (!(await ensureBookingStillHeld(booking))) {
         await releaseLostBookingPayment(booking, session.payment_intent);
@@ -94,7 +95,7 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
         try {
           const hostUser = await User.findById(booking.property.host).select("googleCalendar outlookCalendar");
           const eventPayload = {
-            summary: `VenCome booking — ${booking.property.title}`,
+            summary: `VenCome booking — ${listingName(booking.property)}`,
             description: `Booking ref ${booking._id.toString().slice(-8).toUpperCase()} via VenCome.`,
             start: booking.checkIn,
             end: booking.checkOut,
@@ -154,7 +155,7 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
                 <div style="background:#f0f0f0;padding:20px;text-align:center;"><img src="${process.env.CLIENT_URL}/logo-blue.png" alt="VenCome" style="max-width:150px;"></div>
                 <div style="padding:30px;color:#333;">
                   <h2 style="color:#305CDE;text-align:center;">Payment Successful 🎉</h2>
-                  <p>Hi <strong>${displayName}</strong>, your payment of <strong>£${total}</strong> for <strong>${booking.property.title}</strong> has been received.</p>
+                  <p>Hi <strong>${displayName}</strong>, your payment of <strong>£${total}</strong> for <strong>${listingName(booking.property)}</strong> has been received.</p>
                   <p>Your booking is now fully secured. View or manage it from your VenCome dashboard.</p>
                 </div>
                 <div style="background:#f0f0f0;padding:20px;text-align:center;font-size:12px;color:#888;">© ${new Date().getFullYear()} VenCome. All rights reserved.</div>
@@ -176,7 +177,7 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
       }
 
       const booking = paymentIntentId
-        ? await Booking.findOne({ paymentIntentId }).populate("property", "title")
+        ? await Booking.findOne({ paymentIntentId }).populate("property", "title listingType parentBuildingTitle")
         : null;
 
       if (booking) {
@@ -194,7 +195,7 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
 
       sendEmail({
         to: process.env.ADMIN_EMAIL,
-        subject: `⚠️ Stripe dispute opened${booking ? `: ${booking.property?.title}` : ""}`,
+        subject: `⚠️ Stripe dispute opened${booking ? `: ${listingName(booking.property)}` : ""}`,
         html: `
           <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
             <img src="https://vencome.com/VenCome.jpg" alt="VenCome" style="height:40px;margin-bottom:24px;" />

@@ -2,6 +2,7 @@
 // deposit scheduling once the card is known, and the bookkeeping events
 // (refunds, reversed transfers, deposit payment state changes). Every handler
 // is safe to run twice -- Stripe re-delivers events.
+const { listingName } = require("../listingName");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const Booking = require("../../models/Booking");
 const Payment = require("../../models/Payment");
@@ -14,7 +15,7 @@ const { placeDeposit, markAwaitingNewCard } = require("./depositHold");
 const { ensureBookingStillHeld, releaseLostBookingPayment, cancelUnpaidBookings } = require("../bookingHold");
 
 const loadBooking = (bookingId) =>
-  Booking.findById(bookingId).populate("property", "title host location depositPolicy");
+  Booking.findById(bookingId).populate("property", "title host location depositPolicy listingType parentBuildingTitle");
 
 // Records the plan for the deposit once we know the card brand.
 async function scheduleDepositAfterPayment(booking, charge) {
@@ -169,7 +170,7 @@ async function onBookingPaid(pi, io, { series = false } = {}) {
       sendEmail({
         to: guest.email,
         subject: "Your payment is confirmed 🎉",
-        html: `<p>Hi ${guest.displayName || guest.firstName || "there"}, your payment of <strong>£${booking.totalPrice}</strong> for <strong>${booking.property.title}</strong> has been received. View or manage it from your VenCome dashboard.</p>`,
+        html: `<p>Hi ${guest.displayName || guest.firstName || "there"}, your payment of <strong>£${booking.totalPrice}</strong> for <strong>${listingName(booking.property)}</strong> has been received. View or manage it from your VenCome dashboard.</p>`,
       }).catch((err) => console.error("[Payments v2] Payment confirmation email failed:", err.message));
     }
   }
@@ -267,13 +268,13 @@ async function markLeaseMonthPaid(pi) {
     sendEmail({
       to: guest.email,
       subject: `Lease payment received — month ${booking.lease.index} of ${booking.lease.months}`,
-      html: `<p>Hi ${guest.displayName || guest.firstName || "there"}, we've taken <strong>£${booking.totalPrice}</strong> for month ${booking.lease.index} of your lease at <strong>${booking.property.title}</strong> (from ${new Date(booking.checkIn).toLocaleDateString("en-GB")}). View your lease from your VenCome dashboard.</p>`,
+      html: `<p>Hi ${guest.displayName || guest.firstName || "there"}, we've taken <strong>£${booking.totalPrice}</strong> for month ${booking.lease.index} of your lease at <strong>${listingName(booking.property)}</strong> (from ${new Date(booking.checkIn).toLocaleDateString("en-GB")}). View your lease from your VenCome dashboard.</p>`,
     }).catch((err) => console.error("[Payments v2] Lease receipt email failed:", err.message));
   }
 }
 
 const loadSeries = (groupId) =>
-  Booking.find({ groupId }).sort({ checkIn: 1 }).populate("property", "title host location depositPolicy");
+  Booking.find({ groupId }).sort({ checkIn: 1 }).populate("property", "title host location depositPolicy listingType parentBuildingTitle");
 
 async function findByDepositPI(pi) {
   return Booking.findOne({ _id: pi.metadata.bookingId, "depositHold.paymentIntentId": pi.id });

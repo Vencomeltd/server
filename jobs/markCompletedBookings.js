@@ -1,3 +1,4 @@
+const { listingName } = require("../utils/listingName");
 const Booking = require("../models/Booking");
 const sendEmail = require("../utils/sendEmail");
 
@@ -10,7 +11,7 @@ async function markCompletedBookings() {
     completed: false,
   })
     .populate("guest", "email displayName firstName")
-    .populate("property", "title");
+    .populate("property", "title listingType parentBuildingTitle");
 
   for (const booking of bookings) {
     // status must reach "completed" for utils/releaseEscrow.js's hourly
@@ -24,7 +25,7 @@ async function markCompletedBookings() {
     if (booking.guest?.email) {
       const guestName = booking.guest.displayName || booking.guest.firstName || "there";
       const hasDeposit = booking.deposit?.amount > 0 && booking.deposit?.status === "charged";
-      const propertyTitle = booking.property?.title || "the space";
+      const propertyTitle = listingName(booking.property) || "the space";
 
       const emailWrapper = (innerHtml) => `
         <div style="font-family: 'Manrope', Arial, sans-serif; background-color: #f4f4f7; padding: 20px;">
