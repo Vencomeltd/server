@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 const authId = require.resolve('../middleware/auth');
-const pass = (req, _res, next) => { req.user = { id: req.header('x-test-user') }; next(); };
+const pass = (req, _res, next) => { req.user = { id: req.header('x-test-user'), adminRole: req.header('x-test-role') || 'full_admin' }; next(); };
 require.cache[authId] = { id: authId, filename: authId, loaded: true, exports: Object.assign(pass, { adminAuth: pass, requireAdminRole: () => pass }) };
 const User = require('../models/User');
 
@@ -40,6 +40,7 @@ User.findByIdAndUpdate = (id, update) => {
   for (const key of Object.keys(update.$unset || {})) delete doc[key];
   return chain({ ...doc });
 };
+User.findById = (id) => chain(db.get(id) ? { ...db.get(id) } : null);
 User.findOneAndUpdate = (filter, update) => {
   const doc = db.get(filter._id);
   if (!doc || !doc.isAdmin) return chain(null);
@@ -107,6 +108,14 @@ test('with another Full Admin in place an admin can be removed, and their role i
   assert.equal(status, 200);
   assert.equal(db.get(OTHER_ADMIN).isAdmin, false);
   assert.equal('adminRole' in db.get(OTHER_ADMIN), false);
+});
+
+test('GET /admin/me answers with the admin\'s effective role (what the panel shows)', async () => {
+  const { status, body } = await call('GET', '/me');
+  assert.equal(status, 200);
+  assert.equal(body.isAdmin, true);
+  assert.equal(body.adminRole, 'full_admin');
+  assert.equal(body.email, 'me@synthetic.test');
 });
 
 test('team invite requires a role and records who added them', async () => {

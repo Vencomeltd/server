@@ -134,6 +134,20 @@ router.post("/verify-login", async (req, res) => {
 // All admin routes require adminAuth
 router.use(adminAuth);
 
+// Who the signed-in admin is, with their effective role. Unlike /auth/me this
+// only answers for real admins (adminAuth checks the database), so the admin
+// panel can confirm access before it shows anything.
+router.get("/me", async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("firstName lastName displayName email profileImage adminTitle");
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json({ ...(user.toObject ? user.toObject() : user), isAdmin: true, adminRole: req.user.adminRole });
+  } catch (err) {
+    console.error("Admin me error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // Tiered access on top of adminAuth — full_admin always passes every gate.
 // /stats and /overview-analytics are intentionally left ungated (every tier
 // sees the dashboard home). Team management stays full_admin-only below.
