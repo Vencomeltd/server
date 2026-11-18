@@ -5,16 +5,27 @@ const auth = async (req, res, next) => {
   const token = req.header("Authorization")?.replace("Bearer ", "");
   if (!token) return res.status(401).json({ error: "No token provided" });
 
+  // A bad or expired token is a 401. A database hiccup while checking the user
+  // is NOT: it used to be reported as "Invalid or expired token", which made
+  // the apps sign people out over a momentary server problem. It is now a 503
+  // ("try again") and nobody is logged out.
+  let decoded;
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    // Verify user still exists and is active
-    const user = await User.findById(decoded.id).select("_id isVerified");
-    if (!user) return res.status(401).json({ error: "User no longer exists" });
-    req.user = decoded;
-    next();
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
   } catch (err) {
-    res.status(401).json({ error: "Invalid or expired token" });
+    return res.status(401).json({ error: "Invalid or expired token" });
   }
+  let user;
+  try {
+    // Verify user still exists and is active
+    user = await User.findById(decoded.id).select("_id isVerified");
+  } catch (err) {
+    console.error("auth lookup failed:", err.message);
+    return res.status(503).json({ error: "Temporary problem, please try again" });
+  }
+  if (!user) return res.status(401).json({ error: "User no longer exists" });
+  req.user = decoded;
+  next();
 };
 
 // Admin-only middleware
@@ -22,15 +33,27 @@ const adminAuth = async (req, res, next) => {
   const token = req.header("Authorization")?.replace("Bearer ", "");
   if (!token) return res.status(401).json({ error: "No token provided" });
 
+  // 401 only when the token itself is bad or expired. A database error while
+  // looking the admin up is a 503 (try again), not a 401: the admin panel
+  // treats a 401 as "your session ended" and signs you out, so a momentary
+  // server hiccup on any one of the dozen requests the dashboard fires on load
+  // used to bounce admins straight back to the sign-in page.
+  let decoded;
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select("_id isAdmin adminRole");
-    if (!user || !user.isAdmin) return res.status(403).json({ error: "Admin access required" });
-    req.user = { ...decoded, isAdmin: true, adminRole: user.adminRole || "full_admin" };
-    next();
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
   } catch (err) {
-    res.status(401).json({ error: "Invalid or expired token" });
+    return res.status(401).json({ error: "Invalid or expired token" });
   }
+  let user;
+  try {
+    user = await User.findById(decoded.id).select("_id isAdmin adminRole");
+  } catch (err) {
+    console.error("adminAuth lookup failed:", err.message);
+    return res.status(503).json({ error: "Temporary problem, please try again" });
+  }
+  if (!user || !user.isAdmin) return res.status(403).json({ error: "Admin access required" });
+  req.user = { ...decoded, isAdmin: true, adminRole: user.adminRole || "full_admin" };
+  next();
 };
 
 // Scopes an admin route to specific tiers (e.g. requireAdminRole("finance")).
