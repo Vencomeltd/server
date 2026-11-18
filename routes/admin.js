@@ -187,7 +187,7 @@ router.get("/stats", async (req, res) => {
     const testUserIds = await User.find({ isTestAccount: true }).distinct("_id");
     const notTestUser = { $nin: testUserIds };
 
-    const [users, properties, bookings, reports, pendingVerifications, escrowPending, activeUsers, pendingListings] = await Promise.all([
+    const [users, properties, bookings, reports, pendingVerifications, escrowPending, activeUsers, pendingListings, activeRooms] = await Promise.all([
       User.countDocuments({ isTestAccount: { $ne: true } }),
       Property.countDocuments({ isActive: true, ...NOT_UNIT, host: notTestUser }),
       Booking.countDocuments({ guest: notTestUser, host: notTestUser }),
@@ -200,6 +200,7 @@ router.get("/stats", async (req, res) => {
       // was more than one page of either).
       User.countDocuments({ isBanned: { $ne: true }, isTestAccount: { $ne: true } }),
       Property.countDocuments({ isActive: false, ...NOT_UNIT, host: notTestUser }),
+      Property.countDocuments({ isActive: true, listingType: "unit", host: notTestUser }),
     ]);
     const totalEscrow = escrowPending.reduce((s, b) => s + b.hostAmount, 0);
     res.json({
@@ -211,6 +212,7 @@ router.get("/stats", async (req, res) => {
       totalEscrowPending: totalEscrow,
       activeUsers,
       pendingListings,
+      activeRooms,
     });
   } catch { res.status(500).json({ error: "Server error" }); }
 });
@@ -390,10 +392,39 @@ router.patch("/users/:id/ban", async (req, res) => {
 
 // Full-admin-only even though the broader /users prefix is support-tier —
 // granting/revoking admin access is a privilege-escalation-sensitive action.
+// Granting needs an explicit role (it used to default to Full Admin, so a bare
+// request made someone a Full Admin). Nobody can change their own access, and
+// the last Full Admin can never be removed. Every change is audit-logged and
+// the grant records who did it and when (adminGrantedBy / adminGrantedAt).
 router.patch("/users/:id/admin", requireAdminRole(), async (req, res) => {
-  const user = await User.findByIdAndUpdate(req.params.id, { isAdmin: req.body.isAdmin ?? true }, { new: true }).select("-password");
-  if (!user) return res.status(404).json({ error: "User not found" });
-  res.json(user);
+  try {
+    const { isAdmin, adminRole } = req.body || {};
+    if (typeof isAdmin !== "boolean") return res.status(400).json({ error: "isAdmin must be true or false" });
+    if (String(req.params.id) === String(req.user.id)) {
+      return res.status(400).json({ error: "You can't change your own admin access" });
+    }
+
+    let update;
+    if (isAdmin) {
+      if (!ADMIN_ROLES.includes(adminRole)) {
+        return res.status(400).json({ error: `Choose a role: ${ADMIN_ROLES.join(", ")}` });
+      }
+      update = { $set: { isAdmin: true, adminRole, adminGrantedBy: req.user.id, adminGrantedAt: new Date() } };
+    } else {
+      if (await isLastFullAdmin(req.params.id)) {
+        return res.status(400).json({ error: "You can't remove the last Full Admin" });
+      }
+      update = { $set: { isAdmin: false }, $unset: { adminRole: "" } };
+    }
+
+    const user = await User.findByIdAndUpdate(req.params.id, update, { new: true }).select("-password");
+    if (!user) return res.status(404).json({ error: "User not found" });
+    console.log(`[Audit] Admin ${req.user.id} ${isAdmin ? `granted admin (${adminRole}) to` : "removed admin access from"} user ${user._id}`);
+    res.json(user);
+  } catch (err) {
+    console.error("Admin access change error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // Admin-triggered password reset — sends the same OTP email used by the
@@ -894,12 +925,15 @@ const testHostFilter = async () => ({ $nin: await User.find({ isTestAccount: tru
 router.get("/properties/counts", async (req, res) => {
   try {
     const hostFilter = req.query.excludeTest === "true" ? { host: await testHostFilter() } : {};
-    const [all, active, inactive, pending, draft] = await Promise.all([
+    const [all, active, inactive, pending, draft, buildings, rooms] = await Promise.all([
       Property.countDocuments({ ...NOT_UNIT, ...hostFilter }),
       ...["active", "inactive", "pending"].map((status) => Property.countDocuments({ ...LISTING_STATUS[status], ...NOT_UNIT, ...hostFilter })),
       Draft.countDocuments(hostFilter),
+      // Buildings are already inside the counts above; rooms are listed apart.
+      Property.countDocuments({ listingType: "building", ...hostFilter }),
+      Property.countDocuments({ listingType: "unit", ...hostFilter }),
     ]);
-    res.json({ all, active, inactive, pending, draft });
+    res.json({ all, active, inactive, pending, draft, buildings, rooms });
   } catch (err) {
     console.error("Admin listing counts error:", err);
     res.status(500).json({ error: "Server error" });
@@ -907,8 +941,11 @@ router.get("/properties/counts", async (req, res) => {
 });
 
 router.get("/properties", async (req, res) => {
-  const { page = 1, limit = 20, q, moderationStatus, excludeTest, status, city, noPhotos, vatNotSet, parentBuilding } = req.query;
-  const filter = { ...(LISTING_STATUS[status] || {}), ...(parentBuilding ? { parentBuilding: String(parentBuilding) } : NOT_UNIT) };
+  const { page = 1, limit = 20, q, moderationStatus, excludeTest, status, city, noPhotos, vatNotSet, parentBuilding, type } = req.query;
+  // type: "building" | "single" | "room" narrows the table (rooms are normally
+  // kept out of the main list and opened under their building).
+  const TYPE_FILTERS = { building: { listingType: "building" }, single: { listingType: { $nin: ["building", "unit"] } }, room: { listingType: "unit" } };
+  const filter = { ...(LISTING_STATUS[status] || {}), ...(parentBuilding ? { parentBuilding: String(parentBuilding) } : type === "room" ? {} : NOT_UNIT), ...(TYPE_FILTERS[type] || {}) };
   const conditions = [];
   if (q) {
     const pattern = { $regex: String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
@@ -1493,6 +1530,18 @@ router.post("/payments/:bookingId/release", async (req, res) => {
 // Shared by the immediate-send path here and the scheduled-broadcast cron
 // (utils/sendScheduledBroadcasts.js) — resolves recipients, emails them, and
 // stamps the Broadcast doc as sent/failed.
+// Who a broadcast target means. Hosts can also be grouped by what they have
+// listed, so admin can e.g. nudge every host who left a draft unfinished.
+async function audienceUserFilter(target) {
+  if (target === "hostsWithDrafts") return { _id: { $in: await Draft.distinct("host") } };
+  if (target === "hostsWithListings") return { _id: { $in: await Property.distinct("host", { ...NOT_UNIT, isActive: true }) } };
+  if (target === "hostsNoListings") {
+    const [withDrafts, withListings] = await Promise.all([Draft.distinct("host"), Property.distinct("host", NOT_UNIT)]);
+    return { isHost: true, _id: { $nin: [...withDrafts, ...withListings] } };
+  }
+  return target === "hosts" ? USER_TABS.hosts : target === "customers" ? USER_TABS.customers : {};
+}
+
 async function sendBroadcastNow(broadcast) {
   // Same groups (and test-account exclusion) as the Users tab counts, so the
   // number the admin sees before sending is who actually gets it. Specific
@@ -1500,7 +1549,7 @@ async function sendBroadcastNow(broadcast) {
   const query =
     broadcast.target === "specific" ? { _id: { $in: broadcast.recipientUsers } } :
     {
-      ...(broadcast.target === "hosts" ? USER_TABS.hosts : broadcast.target === "customers" ? USER_TABS.customers : {}),
+      ...(await audienceUserFilter(broadcast.target)),
       ...NOT_TEST,
     };
   const users = await User.find(query).select("email firstName displayName").lean();
@@ -1566,6 +1615,19 @@ router.post("/broadcast", async (req, res) => {
   } catch (err) {
     console.error("Broadcast error:", err);
     res.status(500).json({ error: err.message || "Server error" });
+  }
+});
+
+// GET /admin/broadcast/audiences — how many people each listing-based group
+// would reach (test accounts excluded, as when sending).
+router.get("/broadcast/audiences", async (req, res) => {
+  try {
+    const targets = ["hostsWithDrafts", "hostsWithListings", "hostsNoListings"];
+    const counts = await Promise.all(targets.map(async (target) => User.countDocuments({ ...(await audienceUserFilter(target)), ...NOT_TEST })));
+    res.json(Object.fromEntries(targets.map((target, i) => [target, counts[i]])));
+  } catch (err) {
+    console.error("Broadcast audiences error:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
@@ -2054,11 +2116,22 @@ router.post("/invoices/:bookingId/resend", async (req, res) => {
 
 const ADMIN_ROLES = ["full_admin", "finance", "support", "content"];
 
+// Older admin records may have no stored role, and those count as Full Admin
+// (that is what adminAuth treats them as), so the "last Full Admin" check
+// has to count them too.
+const FULL_ADMIN_FILTER = { isAdmin: true, $or: [{ adminRole: "full_admin" }, { adminRole: { $exists: false } }, { adminRole: null }] };
+const isLastFullAdmin = async (userId) => {
+  const target = await User.findOne({ _id: userId, ...FULL_ADMIN_FILTER }).select("_id");
+  if (!target) return false;
+  return (await User.countDocuments(FULL_ADMIN_FILTER)) <= 1;
+};
+
 // ─── Team ─────────────────────────────────────────────────────────────────────
 router.get("/team", async (req, res) => {
   try {
     const team = await User.find({ isAdmin: true })
-      .select("firstName lastName displayName email profileImage adminTitle adminRole createdAt")
+      .select("firstName lastName displayName email profileImage adminTitle adminRole adminGrantedBy adminGrantedAt createdAt")
+      .populate("adminGrantedBy", "firstName lastName displayName email")
       .sort({ createdAt: 1 });
     res.json({ team });
   } catch (err) {
@@ -2087,12 +2160,19 @@ router.patch("/team/:id/role", async (req, res) => {
     if (!ADMIN_ROLES.includes(adminRole)) {
       return res.status(400).json({ error: `adminRole must be one of: ${ADMIN_ROLES.join(", ")}` });
     }
+    if (String(req.params.id) === String(req.user.id)) {
+      return res.status(400).json({ error: "You can't change your own role" });
+    }
+    if (adminRole !== "full_admin" && (await isLastFullAdmin(req.params.id))) {
+      return res.status(400).json({ error: "You can't demote the last Full Admin" });
+    }
     const user = await User.findOneAndUpdate(
       { _id: req.params.id, isAdmin: true },
       { adminRole },
       { new: true }
     ).select("firstName lastName displayName email profileImage adminTitle adminRole createdAt");
     if (!user) return res.status(404).json({ error: "Admin user not found" });
+    console.log(`[Audit] Admin ${req.user.id} changed the role of admin ${user._id} to ${adminRole}`);
     res.json({ success: true, user });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
@@ -2104,8 +2184,9 @@ router.post("/team/invite", async (req, res) => {
   try {
     const { email, adminTitle, adminRole } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
-    if (adminRole && !ADMIN_ROLES.includes(adminRole)) {
-      return res.status(400).json({ error: `adminRole must be one of: ${ADMIN_ROLES.join(", ")}` });
+    // The role must be chosen: it used to default to Full Admin when left out.
+    if (!ADMIN_ROLES.includes(adminRole)) {
+      return res.status(400).json({ error: `Choose a role: ${ADMIN_ROLES.join(", ")}` });
     }
 
     const user = await User.findOne({ email: email.toLowerCase().trim() });
@@ -2114,8 +2195,11 @@ router.post("/team/invite", async (req, res) => {
 
     user.isAdmin = true;
     user.adminTitle = adminTitle || "";
-    user.adminRole = adminRole || "full_admin";
+    user.adminRole = adminRole;
+    user.adminGrantedBy = req.user.id;
+    user.adminGrantedAt = new Date();
     await user.save();
+    console.log(`[Audit] Admin ${req.user.id} added ${user._id} to the admin team as ${adminRole}`);
 
     res.json({ success: true, user: { _id: user._id, email: user.email, displayName: user.displayName, adminTitle: user.adminTitle, adminRole: user.adminRole } });
   } catch (err) {

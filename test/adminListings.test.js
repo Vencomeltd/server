@@ -51,7 +51,7 @@ const get = async route => { await ready; const res = await fetch(`http://127.0.
 test('listing status counts and lists agree, excluding test hosts when requested', async () => {
   for (const excludeTest of [true, false]) {
     const { body: counts } = await get(`/properties/counts?excludeTest=${excludeTest}`);
-    assert.deepEqual(counts, { all: excludeTest ? 3 : 4, active: excludeTest ? 1 : 2, inactive: 1, pending: 1, draft: 1 });
+    assert.deepEqual(counts, { all: excludeTest ? 3 : 4, active: excludeTest ? 1 : 2, inactive: 1, pending: 1, draft: 1, buildings: 0, rooms: 0 });
     for (const status of ['active', 'inactive', 'pending']) {
       const { body } = await get(`/properties?status=${status}&excludeTest=${excludeTest}`);
       assert.equal(body.total, counts[status]);
@@ -124,7 +124,13 @@ test('a building is one listing: units are left out of counts and lists unless a
   );
   try {
     const { body: counts } = await get('/properties/counts');
-    assert.deepEqual(counts, { all: 5, active: 3, inactive: 1, pending: 1, draft: 1 });
+    assert.deepEqual(counts, { all: 5, active: 3, inactive: 1, pending: 1, draft: 1, buildings: 1, rooms: 2 });
+    // the type filter: rooms are only listed when asked for, buildings and single spaces apart
+    assert.deepEqual((await get('/properties?type=room')).body.properties.map(doc => doc._id), ['synthetic-unit-a', 'synthetic-unit-b']);
+    assert.deepEqual((await get('/properties?type=building')).body.properties.map(doc => doc._id), ['synthetic-building']);
+    const { body: singles } = await get('/properties?type=single');
+    assert.equal(singles.total, 4);
+    assert.ok(singles.properties.every(doc => doc.listingType !== 'building' && doc.listingType !== 'unit'));
     const { body: all } = await get('/properties');
     assert.equal(all.total, 5);
     assert.ok(all.properties.every(doc => doc.listingType !== 'unit'));

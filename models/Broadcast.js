@@ -6,7 +6,7 @@ const broadcastSchema = new mongoose.Schema(
     message: { type: String, required: true },
     target: {
       type: String,
-      enum: ["all", "hosts", "customers", "specific"],
+      enum: ["all", "hosts", "customers", "hostsWithDrafts", "hostsWithListings", "hostsNoListings", "specific"],
       required: true,
     },
     // Only set when target === "specific"

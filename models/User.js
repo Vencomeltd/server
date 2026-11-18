@@ -124,11 +124,17 @@ const userSchema = new mongoose.Schema(
     adminTitle: { type: String, default: "" }, // e.g. "Founder", "Tech Lead" — display only
     // Full Admin sees/does everything; the other tiers scope down which admin
     // sections a team member can access — see middleware/auth.js requireAdminRole.
+    // No default on purpose: a default of "full_admin" meant every account
+    // (hosts and customers included) already carried the top role, so flipping
+    // isAdmin made someone a Full Admin by accident. The role is now always
+    // chosen explicitly when admin access is granted (routes/admin.js).
     adminRole: {
       type: String,
       enum: ["full_admin", "finance", "support", "content"],
-      default: "full_admin",
     },
+    // Who gave this account admin access, and when (audit trail).
+    adminGrantedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    adminGrantedAt: { type: Date, default: null },
     isBanned: { type: Boolean, default: false },
     // Consent-based support access is now tracked in its own collection —
     // see models/SupportAccessRequest.js — rather than a flag here, since
